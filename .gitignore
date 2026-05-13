@@ -1,0 +1,41 @@
+.env
+data/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.DS_Store
+.venv/
+venv/
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+.venv/
+
+# Environment variables
+.env
+
+# macOS
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VS Code
+.vscode/
+
+# Cache
+.cache/
+*.tmp
+
+# Large ML models
+*.joblib
+*.pkl
+
+# Outputs pesados
+outputs/advanced_models/
+outputs/models/
+
+# Python notebook checkpoints
+*.ipynb_checkpoints

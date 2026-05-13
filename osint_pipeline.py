@@ -1,0 +1,1547 @@
+"""
+Pipeline OSINT para un proyecto de ML sobre conflicto Iran-Israel-EE.UU.
+
+El modulo esta disenado para dos usos:
+1. Importarlo desde Jupyter Notebook.
+2. Ejecutarlo como script: python osint_pipeline.py
+
+No usa sys.exit(); si una fuente falla, registra el error y continua.
+"""
+
+from __future__ import annotations
+
+import argparse
+import io
+import logging
+import os
+import random
+import re
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from pathlib import Path
+from typing import Any, Callable
+from urllib.parse import quote_plus
+
+import feedparser
+import pandas as pd
+import requests
+from bs4 import BeautifulSoup
+from dotenv import find_dotenv, load_dotenv
+from requests import Response, Session
+from requests.adapters import HTTPAdapter
+
+
+DEFAULT_COLUMNS = [
+    "timestamp",
+    "source",
+    "title",
+    "text",
+    "url",
+    "country",
+    "lat",
+    "lon",
+    "value",
+]
+
+OPTIONAL_COLUMNS = [
+    "confidence",
+    "satellite",
+]
+
+SOURCE_OUTPUTS = {
+    "gdelt": "gdelt.csv",
+    "bbc_rss": "bbc_rss.csv",
+    "aljazeera_rss": "aljazeera_rss.csv",
+    "google_news_rss": "google_news_rss.csv",
+    "opensky": "opensky.csv",
+    "nasa_firms": "nasa_firms.csv",
+}
+
+DEFAULT_ENABLED_SOURCES = {
+    "gdelt": True,
+    "bbc_rss": True,
+    "aljazeera_rss": True,
+    "google_news_rss": True,
+    "opensky": True,
+    "nasa_firms": True,
+}
+
+DEFAULT_GOOGLE_NEWS_QUERIES = [
+    "Iran Israel conflict",
+    "Iran Israel escalation",
+    "Iran US Israel Middle East",
+]
+
+NEWS_SOURCES = {"gdelt", "bbc_rss", "aljazeera_rss", "google_news_rss"}
+
+COUNTRY_COORDS = {
+    "Iran": (32.4279, 53.6880),
+    "Israel": (31.0461, 34.8516),
+    "United States": (37.0902, -95.7129),
+    "Palestinian Territory": (31.9522, 35.2332),
+    "Lebanon": (33.8547, 35.8623),
+    "Syria": (34.8021, 38.9968),
+    "Iraq": (33.2232, 43.6793),
+    "Jordan": (30.5852, 36.2384),
+    "Yemen": (15.5527, 48.5164),
+    "Qatar": (25.3548, 51.1839),
+    "Saudi Arabia": (23.8859, 45.0792),
+}
+
+COUNTRY_PATTERNS = [
+    ("Iran", r"\b(iran|iranian|tehran)\b"),
+    ("Israel", r"\b(israel|israeli|tel aviv|jerusalem|haifa)\b"),
+    ("United States", r"\b(united states|u\.s\.|usa|us\b|american|washington)\b"),
+    ("Palestinian Territory", r"\b(gaza|palestine|palestinian|west bank|hamas)\b"),
+    ("Lebanon", r"\b(lebanon|lebanese|beirut|hezbollah)\b"),
+    ("Syria", r"\b(syria|syrian|damascus)\b"),
+    ("Iraq", r"\b(iraq|iraqi|baghdad)\b"),
+    ("Jordan", r"\b(jordan|amman)\b"),
+    ("Yemen", r"\b(yemen|houthi|houthis|sanaa)\b"),
+    ("Qatar", r"\b(qatar|doha)\b"),
+    ("Saudi Arabia", r"\b(saudi arabia|saudi|riyadh)\b"),
+]
+
+
+@dataclass
+class PipelineConfig:
+    """Configuracion central del pipeline."""
+
+    data_dir: Path = Path("data")
+    enabled_sources: dict[str, bool] = field(default_factory=lambda: dict(DEFAULT_ENABLED_SOURCES))
+    request_timeout: int = 30
+    max_retries: int = 4
+    backoff_factor: float = 2.0
+    backoff_max_seconds: float = 300.0
+    cache_ttl_minutes: int = 60
+    use_cache: bool = True
+    user_agent: str = (
+        "ProyectoFinalML1-OSINTPipeline/1.0 "
+        "(academic research; contact: estudiante-universidad@example.com)"
+    )
+    gdelt_query: str = (
+        '(Iran OR Iranian OR Israel OR Israeli OR Tehran OR "Tel Aviv" OR Jerusalem) '
+        "(conflict OR escalation OR attack OR attacks OR strike OR missile OR "
+        'military OR nuclear OR diplomacy OR diplomatic OR sanctions OR "United States" '
+        "OR USA OR Washington)"
+    )
+    gdelt_timespan: str = "24h"
+    gdelt_maxrecords: int = 100
+    gdelt_sort: str = "datedesc"
+    gdelt_min_interval_seconds: float = 30.0
+    bbc_feed_url: str = "https://feeds.bbci.co.uk/news/world/rss.xml"
+    aljazeera_feed_url: str = "https://www.aljazeera.com/xml/rss/all.xml"
+    google_news_queries: list[str] = field(
+        default_factory=lambda: list(DEFAULT_GOOGLE_NEWS_QUERIES)
+    )
+    google_news_hl: str = "en-US"
+    google_news_gl: str = "US"
+    google_news_ceid: str = "US:en"
+    google_news_min_interval_seconds: float = 5.0
+    opensky_bbox: tuple[float, float, float, float] = (24.0, 34.0, 40.0, 64.0)
+    opensky_client_id: str | None = None
+    opensky_client_secret: str | None = None
+    nasa_firms_map_key: str | None = None
+    nasa_firms_source: str = "VIIRS_SNPP_NRT"
+    nasa_firms_area: str = "20,10,80,50"
+    nasa_firms_day_range: int = 7
+    nasa_firms_empty_retry_day_range: int | None = 14
+    nasa_firms_date: str | None = None
+
+    @classmethod
+    def from_env(cls) -> "PipelineConfig":
+        """Construye la configuracion desde variables de entorno y .env."""
+
+        env_path = find_dotenv(usecwd=True)
+        load_dotenv(env_path if env_path else None)
+        config = cls()
+        config.data_dir = Path(os.getenv("DATA_DIR", str(config.data_dir)))
+        config.request_timeout = int(os.getenv("REQUEST_TIMEOUT", config.request_timeout))
+        config.max_retries = int(os.getenv("MAX_RETRIES", config.max_retries))
+        config.backoff_factor = float(os.getenv("BACKOFF_FACTOR", config.backoff_factor))
+        config.backoff_max_seconds = float(
+            os.getenv("BACKOFF_MAX_SECONDS", config.backoff_max_seconds)
+        )
+        config.cache_ttl_minutes = int(os.getenv("CACHE_TTL_MINUTES", config.cache_ttl_minutes))
+        config.use_cache = parse_bool(os.getenv("USE_CACHE"), config.use_cache)
+        config.user_agent = os.getenv("USER_AGENT", config.user_agent)
+        config.gdelt_query = os.getenv("GDELT_QUERY", config.gdelt_query)
+        config.gdelt_timespan = os.getenv("GDELT_TIMESPAN", config.gdelt_timespan)
+        config.gdelt_maxrecords = int(os.getenv("GDELT_MAXRECORDS", config.gdelt_maxrecords))
+        config.gdelt_sort = os.getenv("GDELT_SORT", config.gdelt_sort)
+        config.gdelt_min_interval_seconds = float(
+            os.getenv("GDELT_MIN_INTERVAL_SECONDS", config.gdelt_min_interval_seconds)
+        )
+        config.bbc_feed_url = os.getenv("BBC_FEED_URL", config.bbc_feed_url)
+        config.aljazeera_feed_url = os.getenv("ALJAZEERA_FEED_URL", config.aljazeera_feed_url)
+        config.google_news_queries = split_query_list(
+            os.getenv("GOOGLE_NEWS_QUERIES"),
+            config.google_news_queries,
+        )
+        config.google_news_hl = os.getenv("GOOGLE_NEWS_HL", config.google_news_hl)
+        config.google_news_gl = os.getenv("GOOGLE_NEWS_GL", config.google_news_gl)
+        config.google_news_ceid = os.getenv("GOOGLE_NEWS_CEID", config.google_news_ceid)
+        config.google_news_min_interval_seconds = float(
+            os.getenv(
+                "GOOGLE_NEWS_MIN_INTERVAL_SECONDS",
+                config.google_news_min_interval_seconds,
+            )
+        )
+        config.opensky_bbox = parse_bbox(os.getenv("OPENSKY_BBOX"), config.opensky_bbox)
+        config.opensky_client_id = os.getenv("OPENSKY_CLIENT_ID") or None
+        config.opensky_client_secret = os.getenv("OPENSKY_CLIENT_SECRET") or None
+        config.nasa_firms_map_key = (os.getenv("NASA_FIRMS_MAP_KEY") or "").strip() or None
+        config.nasa_firms_source = os.getenv("NASA_FIRMS_SOURCE", config.nasa_firms_source)
+        config.nasa_firms_area = normalize_nasa_area(
+            os.getenv("NASA_FIRMS_AREA"),
+            config.nasa_firms_area,
+        )
+        config.nasa_firms_day_range = int(
+            os.getenv("NASA_FIRMS_DAY_RANGE", config.nasa_firms_day_range)
+        )
+        config.nasa_firms_empty_retry_day_range = parse_optional_int(
+            os.getenv("NASA_FIRMS_EMPTY_RETRY_DAY_RANGE"),
+            config.nasa_firms_empty_retry_day_range,
+        )
+        config.nasa_firms_date = os.getenv("NASA_FIRMS_DATE") or None
+
+        enabled_from_env = os.getenv("ENABLED_SOURCES")
+        disabled_from_env = os.getenv("DISABLED_SOURCES")
+        if enabled_from_env:
+            config.enabled_sources = sources_from_csv(enabled_from_env)
+        if disabled_from_env:
+            for source_name in split_csv(disabled_from_env):
+                if source_name in config.enabled_sources:
+                    config.enabled_sources[source_name] = False
+
+        return config
+
+
+class RateLimiter:
+    """Rate limiter simple por clave, suficiente para llamadas secuenciales."""
+
+    def __init__(self) -> None:
+        self._last_call: dict[str, float] = {}
+
+    def wait(self, key: str, min_interval_seconds: float) -> None:
+        """Espera si la ultima llamada para la clave fue demasiado reciente."""
+
+        if min_interval_seconds <= 0:
+            return
+        now = time.monotonic()
+        elapsed = now - self._last_call.get(key, 0.0)
+        wait_seconds = min_interval_seconds - elapsed
+        if wait_seconds > 0:
+            wait_seconds += random.uniform(0.25, 1.25)
+            logging.info("Rate limit local para %s: esperando %.1f segundos", key, wait_seconds)
+            time.sleep(wait_seconds)
+        self._last_call[key] = time.monotonic()
+
+
+class OpenSkyTokenManager:
+    """Gestiona OAuth2 client credentials para OpenSky cuando hay credenciales."""
+
+    TOKEN_URL = (
+        "https://auth.opensky-network.org/auth/realms/opensky-network/"
+        "protocol/openid-connect/token"
+    )
+
+    def __init__(
+        self,
+        session: Session,
+        client_id: str | None,
+        client_secret: str | None,
+        config: PipelineConfig,
+    ) -> None:
+        self.session = session
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.config = config
+        self.token: str | None = None
+        self.expires_at: datetime | None = None
+
+    @property
+    def enabled(self) -> bool:
+        """Indica si hay credenciales OAuth disponibles."""
+
+        return bool(self.client_id and self.client_secret)
+
+    def headers(self) -> dict[str, str]:
+        """Devuelve headers con Bearer token o dict vacio si no hay credenciales."""
+
+        if not self.enabled:
+            return {}
+        token = self.get_token()
+        return {"Authorization": f"Bearer {token}"} if token else {}
+
+    def get_token(self) -> str | None:
+        """Devuelve un token vigente y lo refresca cerca del vencimiento."""
+
+        if self.token and self.expires_at and datetime.now(timezone.utc) < self.expires_at:
+            return self.token
+        return self.refresh_token()
+
+    def refresh_token(self) -> str | None:
+        """Solicita un token nuevo a OpenSky sin interrumpir el pipeline si falla."""
+
+        if not self.enabled:
+            return None
+        response = request_with_retries(
+            self.session,
+            "POST",
+            self.TOKEN_URL,
+            config=self.config,
+            source_name="opensky_auth",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+        )
+        if response is None:
+            logging.warning("No fue posible obtener token OAuth de OpenSky; se usara acceso anonimo.")
+            return None
+        payload = safe_json(response, "opensky_auth")
+        if not payload or "access_token" not in payload:
+            logging.warning("Respuesta OAuth de OpenSky invalida; se usara acceso anonimo.")
+            return None
+        expires_in = int(payload.get("expires_in", 1800))
+        self.token = payload["access_token"]
+        self.expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(expires_in - 30, 60))
+        return self.token
+
+
+def parse_bool(raw_value: str | None, default: bool) -> bool:
+    """Convierte texto de entorno en booleano."""
+
+    if raw_value is None:
+        return default
+    return raw_value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def split_csv(raw_value: str) -> list[str]:
+    """Parte listas separadas por coma y normaliza espacios."""
+
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
+def split_query_list(raw_value: str | None, default: list[str]) -> list[str]:
+    """Parte queries RSS separadas por punto y coma o barra vertical."""
+
+    if not raw_value:
+        return list(default)
+    queries = [item.strip() for item in re.split(r"[;|]", raw_value) if item.strip()]
+    return queries or list(default)
+
+
+def parse_optional_int(raw_value: str | None, default: int | None) -> int | None:
+    """Parsea enteros opcionales desde entorno, aceptando vacio/none/null."""
+
+    if raw_value is None:
+        return default
+    value = raw_value.strip().lower()
+    if not value or value in {"none", "null", "false", "0"}:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logging.warning("Valor entero opcional invalido: %s. Se usara %s.", raw_value, default)
+        return default
+
+
+def sources_from_csv(raw_value: str) -> dict[str, bool]:
+    """Crea el mapa enabled_sources a partir de una lista de fuentes."""
+
+    selected = set(split_csv(raw_value))
+    return {source_name: source_name in selected for source_name in DEFAULT_ENABLED_SOURCES}
+
+
+def parse_bbox(
+    raw_value: str | None,
+    default: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    """Parsea bounding boxes lat_min,lon_min,lat_max,lon_max."""
+
+    if not raw_value:
+        return default
+    try:
+        values = tuple(float(part.strip()) for part in raw_value.split(","))
+    except ValueError:
+        logging.warning("OPENSKY_BBOX invalido: %s. Se usara el valor por defecto.", raw_value)
+        return default
+    if len(values) != 4:
+        logging.warning("OPENSKY_BBOX requiere 4 valores. Se usara el valor por defecto.")
+        return default
+    return values  # type: ignore[return-value]
+
+
+def normalize_nasa_area(raw_value: str | None, default: str) -> str:
+    """Valida bbox FIRMS en formato west,south,east,north y devuelve texto estable."""
+
+    if not raw_value:
+        return default
+    try:
+        values = [float(part.strip()) for part in raw_value.split(",")]
+    except ValueError:
+        logging.warning("NASA_FIRMS_AREA invalido: %s. Se usara %s.", raw_value, default)
+        return default
+    if len(values) != 4:
+        logging.warning("NASA_FIRMS_AREA requiere 4 valores. Se usara %s.", default)
+        return default
+    west, south, east, north = values
+    if west >= east or south >= north:
+        logging.warning(
+            "NASA_FIRMS_AREA debe ser west,south,east,north. Se usara %s.",
+            default,
+        )
+        return default
+    return ",".join(format_float(value) for value in values)
+
+
+def format_float(value: float) -> str:
+    """Formatea floats sin ceros innecesarios para URLs reproducibles."""
+
+    return f"{value:g}"
+
+
+def configure_logging(level: str = "INFO") -> None:
+    """Configura logging claro para consola y notebooks."""
+
+    numeric_level = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=numeric_level,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
+    )
+
+
+def build_session(config: PipelineConfig) -> Session:
+    """Crea una requests.Session reutilizable con headers conservadores."""
+
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": config.user_agent,
+            "Accept": "application/json, text/csv, application/rss+xml, application/xml, text/xml, */*",
+            "Connection": "keep-alive",
+        }
+    )
+    adapter = HTTPAdapter(pool_connections=8, pool_maxsize=8)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def parse_retry_after(header_value: str | None) -> float | None:
+    """Interpreta Retry-After en segundos o fecha HTTP."""
+
+    if not header_value:
+        return None
+    value = header_value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        retry_at = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    return max(0.0, (retry_at - datetime.now(timezone.utc)).total_seconds())
+
+
+def compute_sleep_seconds(
+    attempt: int,
+    response: Response | None,
+    config: PipelineConfig,
+) -> float:
+    """Calcula exponential backoff con jitter y respeta Retry-After si existe."""
+
+    retry_after = parse_retry_after(response.headers.get("Retry-After") if response else None)
+    if retry_after is not None:
+        return retry_after
+    sleep_seconds = config.backoff_factor * (2 ** max(attempt - 1, 0))
+    sleep_seconds += random.uniform(0.0, 1.0)
+    return min(sleep_seconds, config.backoff_max_seconds)
+
+
+def is_retryable_status(status_code: int) -> bool:
+    """Define HTTP status temporales que ameritan reintento."""
+
+    return status_code == 429 or 500 <= status_code <= 599
+
+
+def request_with_retries(
+    session: Session,
+    method: str,
+    url: str,
+    config: PipelineConfig,
+    source_name: str,
+    return_response_on_statuses: set[int] | None = None,
+    **kwargs: Any,
+) -> Response | None:
+    """Ejecuta una peticion HTTP robusta con retries, backoff y manejo de 429."""
+
+    timeout = kwargs.pop("timeout", config.request_timeout)
+    for attempt in range(1, config.max_retries + 1):
+        try:
+            response = session.request(method, url, timeout=timeout, **kwargs)
+        except requests.RequestException as exc:
+            logging.warning(
+                "%s intento %s/%s fallo por conexion: %s",
+                source_name,
+                attempt,
+                config.max_retries,
+                exc,
+            )
+            if attempt == config.max_retries:
+                return None
+            sleep_seconds = compute_sleep_seconds(attempt, None, config)
+            logging.info("%s reintentara en %.1f segundos", source_name, sleep_seconds)
+            time.sleep(sleep_seconds)
+            continue
+
+        if 200 <= response.status_code < 300:
+            return response
+
+        retryable = is_retryable_status(response.status_code)
+        body_preview = response.text[:250].replace("\n", " ") if response.text else ""
+        logging.warning(
+            "%s recibio HTTP %s en intento %s/%s. Respuesta: %s",
+            source_name,
+            response.status_code,
+            attempt,
+            config.max_retries,
+            body_preview,
+        )
+
+        if not retryable or attempt == config.max_retries:
+            if return_response_on_statuses and response.status_code in return_response_on_statuses:
+                return response
+            return None
+
+        sleep_seconds = compute_sleep_seconds(attempt, response, config)
+        if response.status_code == 429:
+            logging.warning(
+                "%s alcanzo rate limit HTTP 429. Esperando %.1f segundos antes de reintentar.",
+                source_name,
+                sleep_seconds,
+            )
+        else:
+            logging.info("%s reintentara en %.1f segundos", source_name, sleep_seconds)
+        time.sleep(sleep_seconds)
+
+    return None
+
+
+def safe_json(response: Response, source_name: str) -> dict[str, Any] | list[Any] | None:
+    """Valida que una respuesta sea JSON antes de parsearla."""
+
+    content_type = response.headers.get("Content-Type", "").lower()
+    body = response.text.lstrip()
+    looks_like_json = body.startswith("{") or body.startswith("[")
+    if "json" not in content_type and not looks_like_json:
+        logging.warning(
+            "%s devolvio Content-Type no JSON (%s). Se ignora la respuesta.",
+            source_name,
+            content_type or "sin Content-Type",
+        )
+        return None
+    try:
+        return response.json()
+    except ValueError as exc:
+        logging.warning("%s devolvio JSON invalido: %s", source_name, exc)
+        return None
+
+
+def strip_html(value: Any) -> str:
+    """Limpia HTML basico de summaries RSS."""
+
+    if value is None:
+        return ""
+    text = str(value)
+    if "<" not in text or ">" not in text:
+        return text.strip()
+    return BeautifulSoup(text, "html.parser").get_text(" ", strip=True)
+
+
+def parse_any_timestamp(value: Any) -> pd.Timestamp:
+    """Convierte fechas heterogeneas a UTC; devuelve NaT si no puede."""
+
+    if value is None or value == "":
+        return pd.NaT
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return pd.to_datetime(value, unit="s", utc=True, errors="coerce")
+    return pd.to_datetime(value, utc=True, errors="coerce")
+
+
+def infer_country_from_text(title: str, text: str) -> str | None:
+    """Infiere pais por palabras clave simples y transparentes."""
+
+    haystack = f"{title} {text}".lower()
+    for country, pattern in COUNTRY_PATTERNS:
+        if re.search(pattern, haystack, flags=re.IGNORECASE):
+            return country
+    return None
+
+
+def is_project_relevant(title: str, text: str) -> bool:
+    """Evalua si una noticia mantiene foco Iran-Israel-EE.UU./Medio Oriente."""
+
+    haystack = f"{title} {text}".lower()
+    has_iran = bool(re.search(r"\b(iran|iranian|tehran)\b", haystack))
+    has_israel = bool(
+        re.search(r"\b(israel|israeli|tel aviv|jerusalem|haifa)\b", haystack)
+    )
+    has_us = bool(
+        re.search(
+            r"\b(united states|u\.s\.|usa|american|washington|white house|pentagon|trump)\b",
+            haystack,
+        )
+    )
+    has_regional_actor = bool(
+        re.search(
+            r"\b(middle east|gaza|palestine|lebanon|syria|iraq|yemen|houthi|hezbollah)\b",
+            haystack,
+        )
+    )
+    has_theme = bool(
+        re.search(
+            r"\b(conflict|escalation|attack|attacks|strike|strikes|missile|drone|"
+            r"military|war|nuclear|diplomacy|diplomatic|ceasefire|sanctions|"
+            r"talks|negotiation|retaliation|airspace)\b",
+            haystack,
+        )
+    )
+    has_core_actor = has_iran or has_israel
+    return (has_core_actor and (has_theme or has_us or has_regional_actor)) or (
+        has_us and has_regional_actor and has_theme
+    )
+
+
+def infer_country_from_coords(lat: float | None, lon: float | None) -> str | None:
+    """Infiere pais por cajas geograficas aproximadas para el area de estudio."""
+
+    if lat is None or lon is None or pd.isna(lat) or pd.isna(lon):
+        return None
+    if 24.0 <= lat <= 40.0 and 44.0 <= lon <= 64.0:
+        return "Iran"
+    if 29.0 <= lat <= 34.0 and 34.0 <= lon <= 36.0:
+        return "Israel"
+    if 24.0 <= lat <= 50.0 and -125.0 <= lon <= -66.0:
+        return "United States"
+    if 31.0 <= lat <= 33.5 and 34.0 <= lon <= 36.0:
+        return "Palestinian Territory"
+    if 33.0 <= lat <= 35.0 and 35.0 <= lon <= 37.0:
+        return "Lebanon"
+    if 32.0 <= lat <= 37.5 and 35.5 <= lon <= 42.5:
+        return "Syria"
+    if 29.0 <= lat <= 38.0 and 39.0 <= lon <= 49.0:
+        return "Iraq"
+    return None
+
+
+def coords_for_country(country: str | None) -> tuple[float | None, float | None]:
+    """Devuelve coordenadas centroides cuando no hay lat/lon puntuales."""
+
+    if not country:
+        return None, None
+    return COUNTRY_COORDS.get(country, (None, None))
+
+
+def ensure_normalized(df: pd.DataFrame | None, source_name: str) -> pd.DataFrame | None:
+    """Garantiza columnas normalizadas, tipos tolerantes y orden estable."""
+
+    if df is None:
+        return None
+    for column in DEFAULT_COLUMNS:
+        if column not in df.columns:
+            df[column] = pd.NA
+    output_columns = DEFAULT_COLUMNS + [column for column in OPTIONAL_COLUMNS if column in df.columns]
+    normalized = df[output_columns].copy()
+    normalized["source"] = normalized["source"].fillna(source_name)
+    normalized["timestamp"] = pd.to_datetime(normalized["timestamp"], utc=True, errors="coerce")
+    for column in ["title", "text", "url", "country"]:
+        normalized[column] = normalized[column].fillna("").astype(str)
+    normalized["lat"] = pd.to_numeric(normalized["lat"], errors="coerce")
+    normalized["lon"] = pd.to_numeric(normalized["lon"], errors="coerce")
+    normalized["value"] = pd.to_numeric(normalized["value"], errors="coerce")
+    for column in ["confidence", "satellite"]:
+        if column in normalized.columns:
+            normalized[column] = normalized[column].fillna("").astype(str)
+    return normalized
+
+
+def filter_thematic_news(df: pd.DataFrame, source_name: str) -> pd.DataFrame:
+    """Filtra noticias para sostener coherencia tematica del proyecto."""
+
+    if source_name not in NEWS_SOURCES or df.empty:
+        return df
+    mask = df.apply(lambda row: is_project_relevant(row["title"], row["text"]), axis=1)
+    filtered = df[mask].reset_index(drop=True)
+    removed = len(df) - len(filtered)
+    if removed:
+        logging.info("%s filtro tematico removio %s filas fuera de foco.", source_name, removed)
+    return filtered
+
+
+def should_use_cache(path: Path, config: PipelineConfig) -> bool:
+    """Determina si un CSV existente puede reutilizarse para bajar presion a APIs."""
+
+    if not config.use_cache or not path.exists() or config.cache_ttl_minutes <= 0:
+        return False
+    age_seconds = time.time() - path.stat().st_mtime
+    return age_seconds <= config.cache_ttl_minutes * 60
+
+
+def load_cached_csv(path: Path, source_name: str) -> pd.DataFrame | None:
+    """Carga cache local sin tumbar el pipeline si el CSV esta corrupto."""
+
+    try:
+        cached = pd.read_csv(path)
+    except (OSError, pd.errors.ParserError) as exc:
+        logging.warning("%s cache invalido en %s: %s", source_name, path, exc)
+        return None
+    logging.info("%s usando cache local: %s", source_name, path)
+    normalized = ensure_normalized(cached, source_name)
+    return filter_thematic_news(normalized, source_name) if normalized is not None else None
+
+
+def load_available_source_csv(path: Path, source_name: str) -> pd.DataFrame | None:
+    """Carga un CSV existente para integracion cuando una fuente no trajo datos nuevos."""
+
+    if not path.exists():
+        return None
+    try:
+        cached = pd.read_csv(path)
+    except (OSError, pd.errors.ParserError) as exc:
+        logging.warning("%s CSV disponible invalido en %s: %s", source_name, path, exc)
+        return None
+    logging.info("%s no produjo datos nuevos; se integrara CSV disponible: %s", source_name, path)
+    normalized = ensure_normalized(cached, source_name)
+    return filter_thematic_news(normalized, source_name) if normalized is not None else None
+
+
+def save_csv(df: pd.DataFrame, path: Path, source_name: str) -> bool:
+    """Guarda un DataFrame en CSV sin romper el flujo si hay error de disco."""
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(path, index=False, encoding="utf-8")
+        logging.info("%s guardado en %s (%s filas)", source_name, path, len(df))
+        return True
+    except OSError as exc:
+        logging.error("%s no pudo guardarse en %s: %s", source_name, path, exc)
+        return False
+
+
+def fetch_gdelt(
+    session: Session,
+    config: PipelineConfig,
+    rate_limiter: RateLimiter,
+) -> pd.DataFrame | None:
+    """Consulta GDELT DOC 2.0 ArticleList con defensas contra 429."""
+
+    source_name = "gdelt"
+    cache_path = config.data_dir / SOURCE_OUTPUTS[source_name]
+    if should_use_cache(cache_path, config):
+        return load_cached_csv(cache_path, source_name)
+
+    rate_limiter.wait("gdelt", config.gdelt_min_interval_seconds)
+    url = "https://api.gdeltproject.org/api/v2/doc/doc"
+    params = {
+        "query": config.gdelt_query,
+        "mode": "artlist",
+        "format": "json",
+        "maxrecords": min(max(config.gdelt_maxrecords, 1), 250),
+        "timespan": config.gdelt_timespan,
+        "sort": config.gdelt_sort,
+    }
+    headers = {
+        "User-Agent": config.user_agent,
+        "Accept": "application/json",
+    }
+    response = request_with_retries(
+        session,
+        "GET",
+        url,
+        config=config,
+        source_name=source_name,
+        params=params,
+        headers=headers,
+    )
+    if response is None:
+        logging.error("GDELT fallo o siguio limitado; el pipeline continuara sin esta fuente.")
+        return None
+
+    payload = safe_json(response, source_name)
+    if not isinstance(payload, dict):
+        return None
+
+    articles = payload.get("articles", [])
+    if not isinstance(articles, list):
+        logging.warning("GDELT JSON no contiene lista 'articles'.")
+        return None
+
+    rows: list[dict[str, Any]] = []
+    for article in articles:
+        if not isinstance(article, dict):
+            continue
+        title = strip_html(article.get("title"))
+        url_value = article.get("url") or article.get("url_mobile") or ""
+        country = article.get("sourcecountry") or infer_country_from_text(title, "")
+        lat, lon = coords_for_country(country)
+        rows.append(
+            {
+                "timestamp": parse_any_timestamp(article.get("seendate")),
+                "source": source_name,
+                "title": title,
+                "text": title,
+                "url": url_value,
+                "country": country or "",
+                "lat": lat,
+                "lon": lon,
+                "value": pd.NA,
+            }
+        )
+
+    df = ensure_normalized(pd.DataFrame(rows), source_name)
+    if df is not None:
+        df = filter_thematic_news(df, source_name)
+        save_csv(df, cache_path, source_name)
+    return df
+
+
+def fetch_rss_feed(
+    session: Session,
+    config: PipelineConfig,
+    source_name: str,
+    feed_url: str,
+) -> pd.DataFrame | None:
+    """Descarga y normaliza un feed RSS/Atom."""
+
+    cache_path = config.data_dir / SOURCE_OUTPUTS[source_name]
+    if should_use_cache(cache_path, config):
+        return load_cached_csv(cache_path, source_name)
+
+    response = request_with_retries(
+        session,
+        "GET",
+        feed_url,
+        config=config,
+        source_name=source_name,
+        headers={"Accept": "application/rss+xml, application/xml, text/xml, */*"},
+    )
+    if response is None:
+        logging.error("%s fallo; el pipeline continuara sin esta fuente.", source_name)
+        return None
+
+    parsed = feedparser.parse(response.content)
+    if getattr(parsed, "bozo", False):
+        logging.warning("%s RSS tiene advertencias de parsing: %s", source_name, parsed.bozo_exception)
+
+    entries = getattr(parsed, "entries", [])
+    rows: list[dict[str, Any]] = []
+    for entry in entries:
+        title = strip_html(entry.get("title", ""))
+        text = strip_html(entry.get("summary", entry.get("description", "")))
+        link = entry.get("link", "")
+        published = entry.get("published") or entry.get("updated")
+        country = infer_country_from_text(title, text)
+        lat, lon = coords_for_country(country)
+        rows.append(
+            {
+                "timestamp": parse_any_timestamp(published),
+                "source": source_name,
+                "title": title,
+                "text": text,
+                "url": link,
+                "country": country or "",
+                "lat": lat,
+                "lon": lon,
+                "value": pd.NA,
+            }
+        )
+
+    df = ensure_normalized(pd.DataFrame(rows), source_name)
+    if df is not None:
+        df = filter_thematic_news(df, source_name)
+        save_csv(df, cache_path, source_name)
+    return df
+
+
+def fetch_bbc_rss(session: Session, config: PipelineConfig, _: RateLimiter) -> pd.DataFrame | None:
+    """Wrapper para BBC RSS."""
+
+    return fetch_rss_feed(session, config, "bbc_rss", config.bbc_feed_url)
+
+
+def fetch_aljazeera_rss(
+    session: Session,
+    config: PipelineConfig,
+    _: RateLimiter,
+) -> pd.DataFrame | None:
+    """Wrapper para Al Jazeera RSS."""
+
+    return fetch_rss_feed(session, config, "aljazeera_rss", config.aljazeera_feed_url)
+
+
+def build_google_news_rss_url(config: PipelineConfig, query: str) -> str:
+    """Construye una URL RSS de Google News para una query especifica."""
+
+    return (
+        "https://news.google.com/rss/search?"
+        f"q={quote_plus(query)}"
+        f"&hl={quote_plus(config.google_news_hl)}"
+        f"&gl={quote_plus(config.google_news_gl)}"
+        f"&ceid={quote_plus(config.google_news_ceid)}"
+    )
+
+
+def entry_publisher(entry: Any) -> str:
+    """Extrae publisher de una entrada RSS si feedparser lo expone."""
+
+    source = entry.get("source", {}) if hasattr(entry, "get") else {}
+    if isinstance(source, dict):
+        return strip_html(source.get("title", ""))
+    return ""
+
+
+def fetch_google_news_rss(
+    session: Session,
+    config: PipelineConfig,
+    rate_limiter: RateLimiter,
+) -> pd.DataFrame | None:
+    """Consulta Google News RSS con queries tematicas y normaliza resultados."""
+
+    source_name = "google_news_rss"
+    cache_path = config.data_dir / SOURCE_OUTPUTS[source_name]
+    if should_use_cache(cache_path, config):
+        return load_cached_csv(cache_path, source_name)
+
+    rows: list[dict[str, Any]] = []
+    successful_feeds = 0
+    for query in config.google_news_queries:
+        rate_limiter.wait(source_name, config.google_news_min_interval_seconds)
+        feed_url = build_google_news_rss_url(config, query)
+        response = request_with_retries(
+            session,
+            "GET",
+            feed_url,
+            config=config,
+            source_name=source_name,
+            headers={"Accept": "application/rss+xml, application/xml, text/xml, */*"},
+        )
+        if response is None:
+            logging.warning("Google News RSS fallo para query: %s", query)
+            continue
+
+        successful_feeds += 1
+        parsed = feedparser.parse(response.content)
+        if getattr(parsed, "bozo", False):
+            logging.warning(
+                "%s RSS tiene advertencias de parsing para '%s': %s",
+                source_name,
+                query,
+                parsed.bozo_exception,
+            )
+
+        for entry in getattr(parsed, "entries", []):
+            title = strip_html(entry.get("title", ""))
+            summary = strip_html(entry.get("summary", entry.get("description", "")))
+            publisher = entry_publisher(entry)
+            text_parts = [f"query={query}"]
+            if publisher:
+                text_parts.append(f"publisher={publisher}")
+            if summary:
+                text_parts.append(summary)
+            text = "; ".join(text_parts)
+            link = entry.get("link", "")
+            published = entry.get("published") or entry.get("updated")
+            country = infer_country_from_text(title, text)
+            lat, lon = coords_for_country(country)
+            rows.append(
+                {
+                    "timestamp": parse_any_timestamp(published),
+                    "source": source_name,
+                    "title": title,
+                    "text": text,
+                    "url": link,
+                    "country": country or "",
+                    "lat": lat,
+                    "lon": lon,
+                    "value": pd.NA,
+                }
+            )
+
+    if successful_feeds == 0:
+        logging.error("Google News RSS fallo en todas las queries; se continuara sin esta fuente.")
+        return None
+
+    df = ensure_normalized(pd.DataFrame(rows), source_name)
+    if df is not None:
+        df = df.drop_duplicates(subset=["title", "url"]).reset_index(drop=True)
+        df = filter_thematic_news(df, source_name)
+        save_csv(df, cache_path, source_name)
+    return df
+
+
+def fetch_opensky(
+    session: Session,
+    config: PipelineConfig,
+    rate_limiter: RateLimiter,
+) -> pd.DataFrame | None:
+    """Consulta estados actuales de aeronaves en OpenSky dentro del bbox configurado."""
+
+    source_name = "opensky"
+    cache_path = config.data_dir / SOURCE_OUTPUTS[source_name]
+    if should_use_cache(cache_path, config):
+        return load_cached_csv(cache_path, source_name)
+
+    rate_limiter.wait("opensky", 10.0)
+    token_manager = OpenSkyTokenManager(
+        session,
+        config.opensky_client_id,
+        config.opensky_client_secret,
+        config,
+    )
+    lamin, lomin, lamax, lomax = config.opensky_bbox
+    response = request_with_retries(
+        session,
+        "GET",
+        "https://opensky-network.org/api/states/all",
+        config=config,
+        source_name=source_name,
+        params={"lamin": lamin, "lomin": lomin, "lamax": lamax, "lomax": lomax},
+        headers=token_manager.headers(),
+    )
+    if response is None:
+        logging.error("OpenSky fallo; el pipeline continuara sin esta fuente.")
+        return None
+
+    payload = safe_json(response, source_name)
+    if not isinstance(payload, dict):
+        return None
+
+    states = payload.get("states") or []
+    if not isinstance(states, list):
+        logging.warning("OpenSky JSON no contiene lista 'states'.")
+        return None
+
+    columns = [
+        "icao24",
+        "callsign",
+        "origin_country",
+        "time_position",
+        "last_contact",
+        "longitude",
+        "latitude",
+        "baro_altitude",
+        "on_ground",
+        "velocity",
+        "true_track",
+        "vertical_rate",
+        "sensors",
+        "geo_altitude",
+        "squawk",
+        "spi",
+        "position_source",
+        "category",
+    ]
+    rows: list[dict[str, Any]] = []
+    for state in states:
+        if not isinstance(state, list):
+            continue
+        values = state + [None] * (len(columns) - len(state))
+        record = dict(zip(columns, values))
+        callsign = strip_html(record.get("callsign") or "").strip()
+        icao24 = record.get("icao24") or ""
+        country = record.get("origin_country") or infer_country_from_coords(
+            record.get("latitude"),
+            record.get("longitude"),
+        )
+        title = f"Aircraft {callsign or icao24}".strip()
+        text = (
+            f"origin_country={country}; velocity_mps={record.get('velocity')}; "
+            f"baro_altitude_m={record.get('baro_altitude')}; on_ground={record.get('on_ground')}"
+        )
+        rows.append(
+            {
+                "timestamp": parse_any_timestamp(record.get("last_contact") or payload.get("time")),
+                "source": source_name,
+                "title": title,
+                "text": text,
+                "url": "https://opensky-network.org/api/states/all",
+                "country": country or "",
+                "lat": record.get("latitude"),
+                "lon": record.get("longitude"),
+                "value": record.get("velocity"),
+            }
+        )
+
+    df = ensure_normalized(pd.DataFrame(rows), source_name)
+    if df is not None:
+        save_csv(df, cache_path, source_name)
+    return df
+
+
+def build_nasa_firms_url(config: PipelineConfig, day_range: int | None = None) -> str | None:
+    """Construye URL de NASA FIRMS sin hardcodear el MAP_KEY en el codigo."""
+
+    if not config.nasa_firms_map_key:
+        return None
+    range_value = day_range if day_range is not None else config.nasa_firms_day_range
+    parts = [
+        "https://firms.modaps.eosdis.nasa.gov/api/area/csv",
+        config.nasa_firms_map_key,
+        config.nasa_firms_source,
+        config.nasa_firms_area,
+        str(range_value),
+    ]
+    if config.nasa_firms_date:
+        parts.append(config.nasa_firms_date)
+    return "/".join(parts)
+
+
+def sanitized_nasa_url(config: PipelineConfig, day_range: int | None = None) -> str:
+    """URL descriptiva sin exponer el MAP_KEY en los CSV."""
+
+    range_value = day_range if day_range is not None else config.nasa_firms_day_range
+    parts = [
+        "https://firms.modaps.eosdis.nasa.gov/api/area/csv",
+        "[MAP_KEY]",
+        config.nasa_firms_source,
+        config.nasa_firms_area,
+        str(range_value),
+    ]
+    if config.nasa_firms_date:
+        parts.append(config.nasa_firms_date)
+    return "/".join(parts)
+
+
+def parse_firms_timestamp(acq_date: Any, acq_time: Any) -> pd.Timestamp:
+    """Convierte acq_date + acq_time de FIRMS a timestamp UTC."""
+
+    if acq_date is None or pd.isna(acq_date):
+        return pd.NaT
+    time_text = str(acq_time or "0000").replace(".0", "").zfill(4)
+    raw = f"{acq_date} {time_text[:2]}:{time_text[2:4]}"
+    return pd.to_datetime(raw, utc=True, errors="coerce")
+
+
+def empty_nasa_firms_frame() -> pd.DataFrame:
+    """Crea un DataFrame FIRMS vacio pero con esquema completo."""
+
+    columns = DEFAULT_COLUMNS + OPTIONAL_COLUMNS
+    normalized = ensure_normalized(pd.DataFrame(columns=columns), "nasa_firms")
+    return normalized if normalized is not None else pd.DataFrame(columns=columns)
+
+
+def validate_nasa_firms_frame(df: pd.DataFrame) -> bool:
+    """Valida campos criticos de FIRMS sin tumbar el pipeline."""
+
+    required_columns = {"timestamp", "lat", "lon", "confidence", "satellite"}
+    missing_columns = required_columns - set(df.columns)
+    if missing_columns:
+        logging.warning("NASA FIRMS no tiene columnas requeridas: %s", sorted(missing_columns))
+        return False
+
+    if df.empty:
+        logging.warning(
+            "NASA FIRMS respondio correctamente, pero el CSV esta vacio para el bbox/dias configurados."
+        )
+        logging.info("[OK] NASA FIRMS esquema validado: lat/lon/timestamp/confidence/satellite")
+        return True
+
+    checks = {
+        "latitudes": df["lat"].notna().any(),
+        "longitudes": df["lon"].notna().any(),
+        "timestamps": df["timestamp"].notna().any(),
+        "confidence": df["confidence"].astype(str).str.strip().ne("").any(),
+        "satellite": df["satellite"].astype(str).str.strip().ne("").any(),
+    }
+    failed = [name for name, ok in checks.items() if not ok]
+    if failed:
+        logging.warning("NASA FIRMS validacion incompleta. Campos sin datos: %s", failed)
+        return False
+
+    logging.info("[OK] NASA FIRMS validado: lat/lon/timestamp/confidence/satellite")
+    return True
+
+
+def nasa_firms_day_ranges_to_try(config: PipelineConfig) -> list[int]:
+    """Devuelve rangos de dias para FIRMS: principal y fallback regional opcional."""
+
+    primary = max(int(config.nasa_firms_day_range), 1)
+    ranges = [primary]
+    fallback = config.nasa_firms_empty_retry_day_range
+    if fallback is not None and fallback > primary:
+        ranges.append(fallback)
+    return ranges
+
+
+def nasa_firms_day_range_from_error(message: str) -> int | None:
+    """Extrae el maximo de dias permitido por FIRMS cuando la API lo informa."""
+
+    match = re.search(r"\[(\d+)\.\.(\d+)\]", message)
+    if not match:
+        return None
+    return int(match.group(2))
+
+
+def normalize_firms_rows(
+    raw: pd.DataFrame,
+    config: PipelineConfig,
+    source_name: str,
+    day_range: int,
+) -> pd.DataFrame | None:
+    """Transforma el CSV crudo de FIRMS al esquema ML normalizado."""
+
+    rows: list[dict[str, Any]] = []
+    for _, row in raw.iterrows():
+        lat = row.get("latitude")
+        lon = row.get("longitude")
+        country = infer_country_from_coords(lat, lon)
+        confidence = row.get("confidence", "")
+        satellite = row.get("satellite", "")
+        instrument = row.get("instrument", "")
+        frp = row.get("frp", pd.NA)
+        bright = row.get("bright_ti4", row.get("brightness", pd.NA))
+        rows.append(
+            {
+                "timestamp": parse_firms_timestamp(row.get("acq_date"), row.get("acq_time")),
+                "source": source_name,
+                "title": (
+                    f"FIRMS hotspot {satellite} {instrument} confidence={confidence}"
+                ).strip(),
+                "text": (
+                    f"satellite={satellite}; instrument={instrument}; "
+                    f"confidence={confidence}; frp={frp}; brightness={bright}; "
+                    f"daynight={row.get('daynight', '')}"
+                ),
+                "url": sanitized_nasa_url(config, day_range),
+                "country": country or "",
+                "lat": lat,
+                "lon": lon,
+                "value": frp if not pd.isna(frp) else bright,
+                "confidence": confidence,
+                "satellite": satellite,
+            }
+        )
+    return ensure_normalized(pd.DataFrame(rows), source_name)
+
+
+def fetch_nasa_firms(
+    session: Session,
+    config: PipelineConfig,
+    rate_limiter: RateLimiter,
+) -> pd.DataFrame | None:
+    """Descarga detecciones FIRMS regionales en CSV usando NASA_FIRMS_MAP_KEY."""
+
+    source_name = "nasa_firms"
+    cache_path = config.data_dir / SOURCE_OUTPUTS[source_name]
+    if should_use_cache(cache_path, config):
+        cached = load_cached_csv(cache_path, source_name)
+        if cached is not None and {"confidence", "satellite"}.issubset(cached.columns):
+            return cached
+        logging.info("NASA FIRMS cache sin columnas nuevas; se consultara la API.")
+
+    if not config.nasa_firms_map_key:
+        logging.warning(
+            "NASA FIRMS desactivado funcionalmente: falta NASA_FIRMS_MAP_KEY en .env."
+        )
+        return None
+
+    day_ranges = nasa_firms_day_ranges_to_try(config)
+    attempted_day_ranges: set[int] = set()
+    while day_ranges:
+        day_range = day_ranges.pop(0)
+        if day_range in attempted_day_ranges:
+            continue
+        attempted_day_ranges.add(day_range)
+        url = build_nasa_firms_url(config, day_range)
+        if not url:
+            return None
+
+        rate_limiter.wait("nasa_firms", 5.0)
+        logging.info(
+            "NASA FIRMS solicitando Area API regional: source=%s bbox=%s days=%s",
+            config.nasa_firms_source,
+            config.nasa_firms_area,
+            day_range,
+        )
+        response = request_with_retries(
+            session,
+            "GET",
+            url,
+            config=config,
+            source_name=source_name,
+            return_response_on_statuses={400},
+            headers={"Accept": "text/csv, */*"},
+        )
+        if response is None:
+            logging.error("NASA FIRMS fallo; el pipeline continuara sin esta fuente.")
+            return None
+        if response.status_code == 400 and "Invalid day range" in response.text:
+            compatible_day_range = nasa_firms_day_range_from_error(response.text)
+            if compatible_day_range and compatible_day_range not in attempted_day_ranges:
+                logging.warning(
+                    "NASA FIRMS rechazo %s dias (%s). Se probara %s dias en el mismo bbox regional.",
+                    day_range,
+                    response.text[:120],
+                    compatible_day_range,
+                )
+                day_ranges = [
+                    queued_range
+                    for queued_range in day_ranges
+                    if queued_range <= compatible_day_range
+                ]
+                day_ranges.insert(0, compatible_day_range)
+                continue
+            logging.warning("NASA FIRMS rechazo day_range y no hay fallback valido: %s", response.text)
+            return None
+
+        logging.info("[OK] NASA FIRMS conectado")
+        text = response.text.strip()
+        if not text or "Invalid" in text[:200] or (
+            "MAP_KEY" in text[:200] and "," not in text[:200]
+        ):
+            logging.warning("NASA FIRMS devolvio una respuesta no tabular: %s", text[:200])
+            return None
+        first_line = text.splitlines()[0] if text.splitlines() else ""
+        if "," not in first_line:
+            logging.warning("NASA FIRMS no devolvio encabezado CSV valido: %s", first_line[:200])
+            return None
+
+        try:
+            raw = pd.read_csv(io.StringIO(response.text))
+        except pd.errors.ParserError as exc:
+            logging.warning("NASA FIRMS CSV invalido: %s", exc)
+            return None
+
+        required = {"latitude", "longitude", "acq_date", "acq_time"}
+        if not required.issubset(set(raw.columns)):
+            logging.warning(
+                "NASA FIRMS no trae columnas esperadas. Columnas: %s",
+                list(raw.columns),
+            )
+            return None
+
+        for metadata_column in ["confidence", "satellite"]:
+            if metadata_column not in raw.columns:
+                logging.warning("NASA FIRMS no trae columna %s; se creara vacia.", metadata_column)
+                raw[metadata_column] = pd.NA
+
+        if raw.empty:
+            df = empty_nasa_firms_frame()
+            validate_nasa_firms_frame(df)
+            if day_ranges:
+                logging.info(
+                    "NASA FIRMS vacio con %s dias; se probara %s dias en el mismo bbox regional.",
+                    day_range,
+                    day_ranges[0],
+                )
+                continue
+            if save_csv(df, cache_path, source_name):
+                logging.info("[OK] nasa_firms.csv generado")
+            return df
+
+        df = normalize_firms_rows(raw, config, source_name, day_range)
+        if df is not None:
+            validate_nasa_firms_frame(df)
+            if save_csv(df, cache_path, source_name):
+                logging.info("[OK] nasa_firms.csv generado")
+        return df
+
+    return empty_nasa_firms_frame()
+
+
+FETCHERS: dict[str, Callable[[Session, PipelineConfig, RateLimiter], pd.DataFrame | None]] = {
+    "gdelt": fetch_gdelt,
+    "bbc_rss": fetch_bbc_rss,
+    "aljazeera_rss": fetch_aljazeera_rss,
+    "google_news_rss": fetch_google_news_rss,
+    "opensky": fetch_opensky,
+    "nasa_firms": fetch_nasa_firms,
+}
+
+
+def integrate_datasets(frames: dict[str, pd.DataFrame | None]) -> pd.DataFrame:
+    """Une las fuentes disponibles y conserva un esquema comun."""
+
+    valid_frames: list[pd.DataFrame] = []
+    for source_name, df in frames.items():
+        if source_name == "integrated" or df is None:
+            continue
+        normalized = ensure_normalized(df, source_name)
+        if normalized is None:
+            continue
+        valid_frames.append(filter_thematic_news(normalized, source_name))
+    if not valid_frames:
+        return pd.DataFrame(columns=DEFAULT_COLUMNS)
+    integrated = pd.concat(valid_frames, ignore_index=True)
+    integrated = integrated.drop_duplicates(
+        subset=["source", "timestamp", "title", "url", "lat", "lon"]
+    )
+    integrated = integrated.sort_values(
+        by=["timestamp", "source"],
+        ascending=[False, True],
+        na_position="last",
+    ).reset_index(drop=True)
+    normalized = ensure_normalized(integrated, "integrated")
+    if normalized is None:
+        return pd.DataFrame(columns=DEFAULT_COLUMNS)
+    return normalized
+
+
+def log_source_summary(
+    results: dict[str, pd.DataFrame | None],
+    integrated: pd.DataFrame,
+) -> None:
+    """Muestra resumen por fuente antes y despues de deduplicar."""
+
+    integrated_counts = (
+        integrated["source"].value_counts().to_dict() if "source" in integrated.columns else {}
+    )
+    logging.info("Resumen por fuente:")
+    for source_name in FETCHERS:
+        frame = results.get(source_name)
+        available_rows = len(frame) if frame is not None else 0
+        integrated_rows = int(integrated_counts.get(source_name, 0))
+        logging.info(
+            "- %s: %s filas disponibles; %s filas en dataset_integrado.csv",
+            source_name,
+            available_rows,
+            integrated_rows,
+        )
+
+
+def run_pipeline(config: PipelineConfig | None = None) -> dict[str, pd.DataFrame | None]:
+    """
+    Ejecuta todas las fuentes habilitadas.
+
+    Retorna un diccionario con DataFrames por fuente y la llave 'integrated'.
+    """
+
+    config = config or PipelineConfig.from_env()
+    config.data_dir.mkdir(parents=True, exist_ok=True)
+    session = build_session(config)
+    rate_limiter = RateLimiter()
+    results: dict[str, pd.DataFrame | None] = {}
+
+    logging.info("Iniciando pipeline OSINT. Carpeta data: %s", config.data_dir)
+    for source_name, fetcher in FETCHERS.items():
+        if not config.enabled_sources.get(source_name, False):
+            logging.info("%s deshabilitado por configuracion.", source_name)
+            results[source_name] = None
+            continue
+        logging.info("Ejecutando fuente: %s", source_name)
+        try:
+            results[source_name] = fetcher(session, config, rate_limiter)
+        except Exception:
+            logging.exception("%s fallo con excepcion inesperada; se continua.", source_name)
+            results[source_name] = None
+        if results[source_name] is None:
+            csv_path = config.data_dir / SOURCE_OUTPUTS[source_name]
+            results[source_name] = load_available_source_csv(csv_path, source_name)
+
+    integrated = integrate_datasets(results)
+    integrated_path = config.data_dir / "dataset_integrado.csv"
+    save_csv(integrated, integrated_path, "dataset_integrado")
+    results["integrated"] = integrated
+    log_source_summary(results, integrated)
+    logging.info("Pipeline finalizado. Filas integradas: %s", len(integrated))
+    return results
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Argumentos CLI para ejecutar el pipeline como script."""
+
+    parser = argparse.ArgumentParser(description="Pipeline OSINT Iran-Israel-EE.UU. para ML1")
+    parser.add_argument("--data-dir", default=None, help="Carpeta de salida CSV. Default: data/")
+    parser.add_argument(
+        "--sources",
+        default=None,
+        help="Fuentes a activar separadas por coma. Ej: gdelt,bbc_rss,google_news_rss",
+    )
+    parser.add_argument("--disable-cache", action="store_true", help="Ignora CSV cacheados.")
+    parser.add_argument("--log-level", default="INFO", help="DEBUG, INFO, WARNING, ERROR")
+    parser.add_argument("--gdelt-query", default=None, help="Query GDELT DOC 2.0")
+    parser.add_argument("--gdelt-timespan", default=None, help="Ej: 6h, 24h, 7d, 1week")
+    parser.add_argument("--gdelt-maxrecords", type=int, default=None, help="1 a 250")
+    parser.add_argument(
+        "--google-news-queries",
+        default=None,
+        help="Queries Google News separadas por punto y coma.",
+    )
+    parser.add_argument(
+        "--opensky-bbox",
+        default=None,
+        help="lat_min,lon_min,lat_max,lon_max. Ej: 24,34,40,64",
+    )
+    parser.add_argument(
+        "--nasa-area",
+        default=None,
+        help="west,south,east,north. Ej: 20,10,80,50",
+    )
+    parser.add_argument(
+        "--nasa-day-range",
+        type=int,
+        default=None,
+        help="Dias FIRMS a consultar. Default regional: 7.",
+    )
+    parser.add_argument(
+        "--nasa-empty-retry-day-range",
+        type=int,
+        default=None,
+        help="Fallback opcional si FIRMS devuelve 0 filas. Ej: 14.",
+    )
+    return parser.parse_args(argv)
+
+
+def config_from_args(args: argparse.Namespace) -> PipelineConfig:
+    """Fusiona .env con argumentos de CLI."""
+
+    config = PipelineConfig.from_env()
+    if args.data_dir:
+        config.data_dir = Path(args.data_dir)
+    if args.sources:
+        config.enabled_sources = sources_from_csv(args.sources)
+    if args.disable_cache:
+        config.use_cache = False
+    if args.gdelt_query:
+        config.gdelt_query = args.gdelt_query
+    if args.gdelt_timespan:
+        config.gdelt_timespan = args.gdelt_timespan
+    if args.gdelt_maxrecords is not None:
+        config.gdelt_maxrecords = args.gdelt_maxrecords
+    if args.google_news_queries:
+        config.google_news_queries = split_query_list(
+            args.google_news_queries,
+            config.google_news_queries,
+        )
+    if args.opensky_bbox:
+        config.opensky_bbox = parse_bbox(args.opensky_bbox, config.opensky_bbox)
+    if args.nasa_area:
+        config.nasa_firms_area = normalize_nasa_area(args.nasa_area, config.nasa_firms_area)
+    if args.nasa_day_range is not None:
+        config.nasa_firms_day_range = args.nasa_day_range
+    if args.nasa_empty_retry_day_range is not None:
+        config.nasa_firms_empty_retry_day_range = args.nasa_empty_retry_day_range
+    return config
+
+
+def main(argv: list[str] | None = None) -> dict[str, pd.DataFrame | None]:
+    """Punto de entrada sin sys.exit(), amigable para notebooks y terminal."""
+
+    args = parse_args(argv)
+    configure_logging(args.log_level)
+    config = config_from_args(args)
+    return run_pipeline(config)
+
+
+if __name__ == "__main__":
+    main()
