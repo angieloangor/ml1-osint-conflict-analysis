@@ -542,7 +542,14 @@ def render_sidebar() -> str:
         unsafe_allow_html=True,
     )
 
-    page = st.sidebar.radio("Navigation", NAV_ITEMS, label_visibility="collapsed")
+    requested_page = st.query_params.get("page", NAV_ITEMS[0])
+    if isinstance(requested_page, list):
+        requested_page = requested_page[0] if requested_page else NAV_ITEMS[0]
+    page_index = NAV_ITEMS.index(requested_page) if requested_page in NAV_ITEMS else 0
+
+    page = st.sidebar.radio("Navigation", NAV_ITEMS, index=page_index, label_visibility="collapsed")
+    if st.query_params.get("page") != page:
+        st.query_params["page"] = page
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Data Status")
@@ -1175,7 +1182,14 @@ def render_semantic_search() -> None:
 
     controls = st.columns([2.5, 1, 1])
     with controls[0]:
-        query = st.text_input("Search query", placeholder="Example: Israeli strikes against Iranian nuclear facilities")
+        default_query = st.query_params.get("q", "")
+        if isinstance(default_query, list):
+            default_query = default_query[0] if default_query else ""
+        query = st.text_input(
+            "Search query",
+            value=default_query,
+            placeholder="Example: Israeli strikes against Iranian nuclear facilities",
+        )
     with controls[1]:
         k = st.slider("Top results", 3, 20, 8)
     with controls[2]:

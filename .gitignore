@@ -29,6 +29,14 @@ __pycache__/
 .cache/
 *.tmp
 
+# Release artifacts
+release/
+*.zip
+
+# Streamlit/runtime caches
+.streamlit/secrets.toml
+*.log
+
 # Large ML models
 *.joblib
 *.pkl
