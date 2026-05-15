@@ -1,140 +1,107 @@
-# OSINT Analytical Platform - ML1 Project
+# OSINT Intelligence Center - ML1 Project
 
-🛰️ **Advanced NLP & Machine Learning for Geopolitical Intelligence**
+Advanced NLP, geospatial context and machine-learning dashboard for OSINT-style analysis of the Iran-Israel-US conflict narrative.
 
-## Overview
+## What This Project Includes
 
-This project is an end-to-end analytical platform for Open Source Intelligence (OSINT) analysis, specifically focused on the Israel-Iran conflict. It combines modern NLP techniques (sentence transformers, BERTopic), advanced ML models (Random Forest, Gradient Boosting), and interactive visualizations to enable data-driven intelligence analysis.
+- Professional Streamlit dashboard in `app.py`
+- Overview with KPI cards and automatic executive summary
+- Geospatial Intelligence map with NASA FIRMS and OpenSky points
+- Timeline analysis with daily/weekly filters and spike detection
+- UMAP Semantic Explorer powered by sentence-transformer embeddings
+- BERTopic topic analysis with top words and embedded HTML view
+- ML model comparison, accuracy/macro-F1 charts and confusion matrices
+- FAISS semantic search over the document corpus
+- Filterable News Explorer with clickable URLs
+- About / Methodology page with sources, pipeline, weak labels and limitations
 
-### Key Achievements
+## Project Structure
 
-✅ **289 processed documents** from BBC, Al Jazeera, Google News, GDELT
-✅ **Semantic embeddings** using all-MiniLM-L6-v2 (384 dimensions) + UMAP visualization
-✅ **BERTopic analysis** for interpretable topic extraction
-✅ **FAISS semantic search** for document similarity
-✅ **5 ML models** with best accuracy: **91.4% (Gradient Boosting)**
-✅ **Interactive Streamlit dashboard** for exploration and analysis
-✅ **Academic report** with methodology and limitations
+```text
+Proyecto_final_ml/
+├── app.py
+├── dashboard/
+│   └── assets/
+│       └── styles.css
+├── data/
+│   ├── dataset_nlp_labeled.csv
+│   ├── dataset_nlp_bertopic.csv
+│   ├── dataset_nlp_embeddings.pkl
+│   ├── nasa_firms.csv
+│   └── opensky.csv
+├── outputs/
+│   ├── model_comparison_advanced.csv
+│   ├── figures/
+│   ├── advanced_figures/
+│   │   └── bertopic_topics.html
+│   └── models/
+│       ├── bertopic_topics.csv
+│       └── faiss_index.pkl
+├── scripts/
+├── notebooks/
+├── report/
+├── requirements.txt
+└── README.md
+```
 
-## Quick Start
+## Local Setup
 
-### 1. Installation
+Recommended environment: macOS, Python 3.14, virtual environment.
 
 ```bash
 cd Proyecto_final_ml
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-### 2. Run the Interactive Dashboard
+Run the dashboard:
 
 ```bash
 streamlit run app.py
 ```
 
-The dashboard will open at `http://localhost:8501` with 7 interactive sections:
+Open the local URL shown by Streamlit, usually:
 
-- 📊 **Corpus Overview**: Dataset statistics and distributions
-- 🌐 **Semantic Explorer**: UMAP visualization of semantic space
-- 📚 **Topic Analysis**: BERTopic results and comparisons
-- 🤖 **ML Models**: Model performance and confusion matrices
-- 🔍 **Semantic Search**: Find similar documents by query
-- 📈 **Statistics**: Detailed corpus analytics
-- 📄 **About**: Project documentation
-
-### 3. Explore Jupyter Notebooks
-
-```bash
-# Dataset preparation and EDA
-jupyter notebook notebooks/01_dataset_nlp_preparation.ipynb
-
-# NLP analysis (TF-IDF, clustering, embeddings)
-jupyter notebook notebooks/02_nlp_analysis.ipynb
-
-# Supervised ML with weak labels
-jupyter notebook notebooks/03_supervised_ml_models.ipynb
-
-# Advanced pipeline demonstration
-jupyter notebook notebooks/04_advanced_osint_dashboard.ipynb
+```text
+http://localhost:8501
 ```
 
-### 4. Access the Academic Report
+## Dashboard Sections
 
-- **Markdown**: `report/final_report.md`
-- **DOCX**: `report/final_report.docx` (for Word)
+1. **Overview**: total documents, sources, temporal coverage, best ML model, topic count, conflict-related documents and executive summary.
+2. **Geospatial Intelligence**: Plotly map with NASA FIRMS and OpenSky points, source/date filters, tooltips and optional heatmap.
+3. **Timeline Analysis**: daily or weekly activity, source/label filters and automatic spike register.
+4. **Semantic Explorer**: interactive UMAP projection colored by label, source, topic or cluster.
+5. **Topic Analysis**: BERTopic topic table, top words, document distribution and embedded `bertopic_topics.html` when present.
+6. **ML Models**: model leaderboard, accuracy/macro-F1 bars and confusion matrices.
+7. **Semantic Search**: FAISS similarity search with score, source, date, label, title and URL. If the sentence-transformer model cannot be loaded, the dashboard falls back to a local TF-IDF similarity search.
+8. **News Explorer**: searchable and filterable article table with clickable links.
+9. **About / Methodology**: data sources, pipeline, weak labels, limitations and geospatial context explanation.
 
-## Project Structure
+## Required Dependencies
 
-```
-Proyecto_final_ml/
-├── data/
-│   ├── *.csv                          # Raw RSS and event data
-│   ├── dataset_nlp.csv                # Cleaned corpus
-│   ├── dataset_nlp_labeled.csv        # With weak labels
-│   ├── dataset_nlp_bertopic.csv       # With BERTopic topics
-│   └── dataset_nlp_embeddings.pkl     # Embeddings + UMAP
-├── scripts/
-│   ├── prepare_dataset_nlp.py         # Dataset preparation
-│   ├── nlp_analysis.py                # TF-IDF, NMF, clustering
-│   ├── supervised_ml.py               # Weak labeling + basic ML
-│   ├── semantic_embeddings.py         # Sentence-transformers + UMAP
-│   ├── bertopic_analysis.py           # BERTopic modeling
-│   ├── semantic_search.py             # FAISS search engine
-│   └── advanced_ml.py                 # RF, GB models
-├── notebooks/
-│   ├── 01_dataset_nlp_preparation.ipynb
-│   ├── 02_nlp_analysis.ipynb
-│   ├── 03_supervised_ml_models.ipynb
-│   └── 04_advanced_osint_dashboard.ipynb
-├── outputs/
-│   ├── figures/                       # EDA plots
-│   ├── advanced_figures/              # Advanced visualizations
-│   └── models/                        # Trained models
-├── report/
-│   ├── final_report.md
-│   └── final_report.docx
-├── app.py                             # Streamlit dashboard
-├── requirements.txt                   # Python dependencies
-└── README.md                          # This file
-```
+Main dashboard dependencies are already listed in `requirements.txt`:
 
-## Model Performance
+- `streamlit`
+- `pandas`, `numpy`
+- `plotly`
+- `scikit-learn`
+- `sentence-transformers`
+- `umap-learn`
+- `bertopic`
+- `faiss-cpu`
+- `folium`
+- `matplotlib`, `seaborn`
+- `nltk`
+- `xgboost`
 
-### Advanced ML Results
+For semantic search, the first query may take longer because the sentence-transformer model is loaded into memory. If the model is unavailable offline, the dashboard still returns local TF-IDF fallback results instead of breaking.
 
-| Model | Accuracy | Precision (Macro) | Recall (Macro) | F1 (Macro) |
-|-------|----------|------------------|----------------|-----------|
-| **GradientBoosting** | **0.9138** | 0.7649 | 0.7690 | 0.7645 |
-| RandomForest | 0.8276 | 0.7245 | 0.6939 | 0.6893 |
-| LogisticRegression | 0.6897 | 0.5907 | 0.6171 | 0.5761 |
-| KNeighborsClassifier | 0.4828 | 0.3964 | 0.3628 | 0.3600 |
-| MultinomialNB | 0.5517 | 0.3096 | 0.2679 | 0.2425 |
+## Regenerate Pipeline Outputs
 
-**Best Model**: Gradient Boosting with **91.4% accuracy** ⭐
-
-## Weak Label Categories
-
-| Label | Count | % |
-|-------|-------|---|
-| escalation | 109 | 37.7% |
-| military | 69 | 23.9% |
-| diplomacy | 49 | 17.0% |
-| other | 31 | 10.7% |
-| energy | 18 | 6.2% |
-| humanitarian | 6 | 2.1% |
-| sanctions | 5 | 1.7% |
-| cyber | 2 | 0.7% |
-
-## Technologies
-
-- **NLP**: sentence-transformers, BERTopic, NLTK
-- **ML**: scikit-learn (Random Forest, Gradient Boosting, Logistic Regression)
-- **Visualization**: Streamlit, Plotly, Matplotlib, UMAP
-- **Search**: FAISS vector database
-- **Data**: pandas, numpy, pickle
-
-## Running the Full Pipeline
+If any dashboard section shows a missing-file warning, regenerate the pipeline artifacts:
 
 ```bash
 python scripts/prepare_dataset_nlp.py
@@ -144,19 +111,57 @@ python scripts/semantic_embeddings.py
 python scripts/bertopic_analysis.py
 python scripts/semantic_search.py
 python scripts/advanced_ml.py
-streamlit run app.py
 ```
+
+The dashboard is robust to missing files, but the richest experience uses the full `data/`, `outputs/models/` and `outputs/advanced_figures/` artifacts.
+
+## Deploy to Streamlit Community Cloud
+
+Official Streamlit deployment docs: https://docs.streamlit.io/deploy/streamlit-community-cloud
+
+1. Push the repository to GitHub.
+2. Make sure `app.py`, `requirements.txt`, `data/`, `outputs/models/` and `outputs/advanced_figures/` are committed if the app should run without rebuilding artifacts.
+3. Go to Streamlit Community Cloud and create a new app from the GitHub repository.
+4. Select the branch that contains this project.
+5. Set the main file path to:
+
+```text
+app.py
+```
+
+6. Deploy the app. Streamlit Cloud will install packages from `requirements.txt`.
+7. If dependency installation is too heavy for the free runtime, deploy a lighter branch that keeps generated artifacts and removes unused training-only packages.
+
+Notes:
+
+- Do not put `python` itself inside `requirements.txt`.
+- If you need API keys or private config, use Streamlit secrets instead of committing `.env`.
+- This project is designed for Python 3.14 locally. On Streamlit Cloud, use the newest supported Python runtime available for your workspace if 3.14 is not offered.
+
+## Expected Screenshots
+
+Capture these views for the final report or submission:
+
+- `screenshots/overview.png`: KPI cards, executive summary and quick analytics.
+- `screenshots/geospatial_intelligence.png`: map with NASA FIRMS/OpenSky filters and visible point tooltips.
+- `screenshots/timeline_spikes.png`: daily or weekly timeline with spike markers.
+- `screenshots/semantic_explorer.png`: UMAP scatter colored by `weak_label`.
+- `screenshots/topic_analysis.png`: BERTopic table, top-word chips and embedded topic visualization.
+- `screenshots/ml_models.png`: model comparison bars and one confusion matrix.
+- `screenshots/semantic_search.png`: query results with similarity scores and URLs.
+- `screenshots/news_explorer.png`: filtered document table with clickable links.
+
+## Current Results Snapshot
+
+- 289 processed documents
+- Sources: Google News RSS, GDELT, Al Jazeera RSS, BBC RSS
+- Weak labels: escalation, military, diplomacy, other, energy, humanitarian, sanctions, cyber
+- Best current model: Gradient Boosting / GradientBoosting, about 91% accuracy on the advanced comparison output
+- Geospatial context: NASA FIRMS hotspots and OpenSky aircraft points are treated as contextual overlays, not as the primary NLP corpus
 
 ## Important Limitations
 
-⚠️ **Weak Labels**: Not validated by human experts
-⚠️ **Small Corpus**: 289 documents
-⚠️ **Source Bias**: Google News dominates (90%)
-⚠️ **No Ground Truth**: Academic proof-of-concept only
-
-## Status
-
-✅ **Complete** - Production Ready for ML1 Academic Project
-
-**Last Updated**: May 12, 2026
-**Version**: 2.0 - Advanced OSINT Platform
+- Weak labels are heuristic and not expert-validated ground truth.
+- The corpus is small and source distribution is imbalanced.
+- Geospatial observations do not prove causal relationships with news events.
+- The platform is intended for academic OSINT analysis and exploratory intelligence workflows.
