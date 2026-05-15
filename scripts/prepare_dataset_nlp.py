@@ -17,6 +17,10 @@ INPUT_FILES = [
     DATA_DIR / "aljazeera_rss.csv",
     DATA_DIR / "google_news_rss.csv",
     DATA_DIR / "gdelt.csv",
+    DATA_DIR / "acled.csv",
+    DATA_DIR / "ukmto.csv",
+    DATA_DIR / "bluesky_posts.csv",
+    DATA_DIR / "youtube_metadata.csv",
 ]
 OUTPUT_CSV = DATA_DIR / "dataset_nlp.csv"
 REQUIRED_COLUMNS = ["timestamp", "source", "title", "text", "url"]
@@ -130,6 +134,9 @@ def build_corpus() -> tuple[pd.DataFrame, pd.Series, int, int]:
     empty_texts_removed = 0
     duplicates_removed = 0
     for path in INPUT_FILES:
+        if not path.exists():
+            print(f"Skipping missing optional NLP source: {path}")
+            continue
         source_name = path.stem
         df = load_source_csv(path)
         missing_by_source.append(df[REQUIRED_COLUMNS].isna().sum())
@@ -137,12 +144,18 @@ def build_corpus() -> tuple[pd.DataFrame, pd.Series, int, int]:
         cleaned = clean_dataframe(df)
         after = len(cleaned)
         empty_texts_removed += max(0, before - after)
-        datasets.append(cleaned)
+        if not cleaned.empty:
+            datasets.append(cleaned)
+    if not datasets:
+        empty = pd.DataFrame(columns=REQUIRED_COLUMNS + ["full_text"])
+        missing = pd.DataFrame(0, index=REQUIRED_COLUMNS, columns=["missing"])
+        return empty, missing, duplicates_removed, empty_texts_removed
     combined = pd.concat(datasets, ignore_index=True)
     before_dups = len(combined)
     combined = combined.drop_duplicates(subset=["timestamp", "source", "title", "text", "url", "full_text"]).reset_index(drop=True)
     duplicates_removed = before_dups - len(combined)
-    return combined, pd.concat(missing_by_source, axis=1), duplicates_removed, empty_texts_removed
+    missing = pd.concat(missing_by_source, axis=1) if missing_by_source else pd.DataFrame(0, index=REQUIRED_COLUMNS, columns=["missing"])
+    return combined, missing, duplicates_removed, empty_texts_removed
 
 
 def plot_distribution_by_source(df: pd.DataFrame) -> None:

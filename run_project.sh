@@ -18,6 +18,7 @@ if [ ! -d ".venv" ]; then
 fi
 
 source .venv/bin/activate
+source scripts/setup_runtime_env.sh
 
 echo "Python: $(python --version)"
 

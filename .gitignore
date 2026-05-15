@@ -28,6 +28,7 @@ __pycache__/
 # Cache
 .cache/
 *.tmp
+.streamlit/
 
 # Release artifacts
 release/

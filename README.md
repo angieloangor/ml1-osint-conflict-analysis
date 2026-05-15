@@ -6,7 +6,7 @@
 ![Status](https://img.shields.io/badge/Status-Delivery%20Ready-success)
 ![License](https://img.shields.io/badge/Academic-ML1-lightgrey)
 
-Professional Data Science and NLP project for OSINT-style analysis of the Iran-Israel-US conflict narrative. The project combines news collection, weak supervision, classic NLP, semantic embeddings, BERTopic, supervised ML, geospatial context and a Streamlit intelligence dashboard.
+Professional Data Science and NLP project for OSINT-style analysis of the Iran-Israel-US conflict narrative. The project combines news collection, weak supervision, classic NLP, semantic embeddings, BERTopic, supervised ML, geospatial context, conflict event feeds, maritime incident reports, social posts, video metadata and a Streamlit intelligence dashboard.
 
 ## Executive Summary
 
@@ -77,7 +77,7 @@ Screenshots are generated in `screenshots/`:
 ## Dashboard Modules
 
 1. **Overview**: document count, sources, time coverage, best model, topic count, conflict-related count and automatic executive summary.
-2. **Geospatial Intelligence**: Plotly map with NASA FIRMS hotspots and OpenSky aircraft points, source/date filters, tooltips and optional heatmap.
+2. **Geospatial Intelligence**: Plotly map with NASA FIRMS hotspots, OpenSky aircraft points, ACLED events and UKMTO maritime incidents, source/date filters, tooltips and optional heatmap.
 3. **Timeline Analysis**: daily or weekly activity, source and weak-label filters, and spike detection.
 4. **Semantic Explorer**: interactive UMAP projection of semantic embeddings.
 5. **Topic Analysis**: BERTopic topics, top words, document distribution and embedded BERTopic HTML.
@@ -108,14 +108,14 @@ Labels such as `escalation`, `military`, `diplomacy`, `energy`, `humanitarian`, 
 
 BERTopic is used to discover interpretable document themes through transformer embeddings and class-based TF-IDF topic representations. The dashboard exposes topic words, distributions and an interactive topic visualization when available.
 
-### Geopolitical Correlation
+### Multisource OSINT Context
 
-NASA FIRMS and OpenSky are included as geospatial context layers. They can help analysts compare temporal and spatial signals, but they are separate from the text corpus and must not be interpreted as proof of causal relationships.
+NASA FIRMS and OpenSky are included as geospatial context layers. ACLED adds structured political violence events, WorldPop and UNHCR add population exposure and displacement context, HDX and OpenStreetMap add humanitarian/infrastructure layers, Sentinel Hub and Google Earth Engine add satellite metadata, UKMTO adds maritime security incident reports, Bluesky adds public social conversation and YouTube adds video metadata. These layers help compare temporal, spatial and narrative signals, but they must not be interpreted as proof of causal relationships.
 
 ## Results Snapshot
 
 - Corpus: 289 processed documents.
-- Sources: Google News RSS, GDELT, Al Jazeera RSS and BBC RSS.
+- Sources: Google News RSS, GDELT, Al Jazeera RSS, BBC RSS, plus optional ACLED, WorldPop, UNHCR, HDX, Sentinel Hub, OpenStreetMap, Google Earth Engine, UKMTO, Bluesky and YouTube collectors.
 - Weak-label categories: escalation, military, diplomacy, other, energy, humanitarian, sanctions and cyber.
 - Semantic representation: sentence-transformer embeddings with UMAP projection.
 - Topic modeling: BERTopic output with top words and document distribution.
@@ -146,6 +146,14 @@ http://127.0.0.1:8501
 
 ## Regenerate Pipeline Outputs
 
+To run the full local workflow in the intended order:
+
+```bash
+./scripts/run_all_pipeline.sh
+```
+
+This script activates `.venv`, loads `.env` safely, configures local caches and runs the OSINT, NLP, ML, semantic search, BERTopic and Humanitarian GeoAI risk steps.
+
 ```bash
 python scripts/prepare_dataset_nlp.py
 python scripts/nlp_analysis.py
@@ -157,6 +165,16 @@ python scripts/advanced_ml.py
 ```
 
 The dashboard handles missing files gracefully, but the full experience requires `data/`, `outputs/models/` and `outputs/advanced_figures/`.
+
+Optional collectors require credentials or public-site availability:
+
+- `ACLED_API_KEY` or `ACLED_USERNAME` / `ACLED_PASSWORD` for ACLED.
+- `SENTINEL_HUB_CLIENT_ID` and `SENTINEL_HUB_CLIENT_SECRET` for Sentinel Hub Catalog API.
+- `earthengine authenticate` plus optional `GEE_PROJECT` when enabling Google Earth Engine.
+- `YOUTUBE_API_KEY` for YouTube Data API v3.
+- `BLUESKY_HANDLE` and `BLUESKY_APP_PASSWORD` are optional; public AppView search is used when absent.
+- WorldPop, UNHCR, HDX and OpenStreetMap/Overpass use public endpoints and skip safely if unavailable.
+- UKMTO uses public pages and PDFs; `pypdf` is used when reports are published as PDF.
 
 ## GitHub Setup
 
@@ -187,6 +205,8 @@ Detailed deployment notes are in `deployment/streamlit_cloud.md`.
 - The corpus is small and source distribution is imbalanced.
 - Google News RSS dominates the current dataset.
 - Geospatial context does not prove event causality.
+- ACLED, Sentinel Hub, Google Earth Engine and YouTube require valid credentials; those collectors skip safely when credentials are absent.
+- UKMTO public pages can change structure; the scraper falls back to existing CSVs when parsing fails.
 - The dashboard supports academic exploration, not operational intelligence decisions.
 - Some semantic models may require internet access on first download; local TF-IDF fallback keeps search usable offline.
 

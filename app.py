@@ -62,6 +62,18 @@ SOURCE_COLORS = {
     "aljazeera_rss": "#d97706",
     "NASA FIRMS": "#dc2626",
     "OpenSky": "#0284c7",
+    "acled": "#be123c",
+    "worldpop": "#16a34a",
+    "unhcr": "#0891b2",
+    "hdx": "#ea580c",
+    "sentinel_hub": "#65a30d",
+    "openstreetmap": "#4d7c0f",
+    "google_earth_engine": "#ca8a04",
+    "ukmto": "#0e7490",
+    "bluesky": "#1d4ed8",
+    "youtube": "#b91c1c",
+    "ACLED": "#be123c",
+    "UKMTO": "#0e7490",
 }
 
 LABEL_COLORS = {
@@ -233,12 +245,35 @@ def load_embeddings() -> dict | None:
         return None
 
 
+def find_column_by_alias(columns: Iterable[str], aliases: Iterable[str]) -> str | None:
+    normalized_aliases = {alias.casefold() for alias in aliases}
+    for column in columns:
+        if str(column).strip().casefold() in normalized_aliases:
+            return column
+    return None
+
+
+def detect_coordinate_columns(df: pd.DataFrame) -> tuple[str | None, str | None]:
+    latitude_col = find_column_by_alias(df.columns, ("lat", "latitude"))
+    longitude_col = find_column_by_alias(df.columns, ("lon", "longitude", "long"))
+    return latitude_col, longitude_col
+
+
+def filter_source_rows(df: pd.DataFrame | None, source_value: str) -> pd.DataFrame | None:
+    if df is None or df.empty or "source" not in df.columns:
+        return None
+
+    mask = df["source"].astype(str).str.strip().str.casefold() == source_value.casefold()
+    filtered = df.loc[mask].copy()
+    filtered.attrs["source_path"] = df.attrs.get("source_path", "unknown")
+    return filtered
+
+
 def normalize_geospatial_frame(df: pd.DataFrame | None, source_name: str) -> pd.DataFrame | None:
     if df is None or df.empty:
         return None
 
-    lat_col = next((column for column in ("lat", "latitude") if column in df.columns), None)
-    lon_col = next((column for column in ("lon", "longitude", "long") if column in df.columns), None)
+    lat_col, lon_col = detect_coordinate_columns(df)
     if lat_col is None or lon_col is None:
         return None
 
@@ -247,33 +282,83 @@ def normalize_geospatial_frame(df: pd.DataFrame | None, source_name: str) -> pd.
     confidence_col = next((column for column in ("confidence", "confidence_score", "probability") if column in df.columns), None)
 
     out = df.copy()
+    source_path = df.attrs.get("source_path", "unknown")
     out["_source_display"] = source_name
-    out["_lat"] = pd.to_numeric(out[lat_col], errors="coerce")
-    out["_lon"] = pd.to_numeric(out[lon_col], errors="coerce")
+    out["latitude"] = pd.to_numeric(out[lat_col], errors="coerce")
+    out["longitude"] = pd.to_numeric(out[lon_col], errors="coerce")
+    out["_lat"] = out["latitude"]
+    out["_lon"] = out["longitude"]
     out["_date"] = normalize_datetime(out[date_col]) if date_col else pd.NaT
     out["_value"] = pd.to_numeric(out[value_col], errors="coerce") if value_col else np.nan
     out["_confidence"] = out[confidence_col].astype(str) if confidence_col else "N/A"
     out["_title"] = out["title"].astype(str) if "title" in out.columns else source_name
     out["_url"] = out["url"].astype(str) if "url" in out.columns else ""
-    out = out.dropna(subset=["_lat", "_lon"])
+    out["_source_file"] = source_path
+    out["_coordinate_columns"] = f"{lat_col} / {lon_col}"
+    out = out.dropna(subset=["latitude", "longitude"])
+    out = out[out["latitude"].between(-90, 90) & out["longitude"].between(-180, 180)]
     return out
+
+
+def load_integrated_geospatial_source(source_value: str, source_name: str) -> pd.DataFrame | None:
+    integrated = read_csv_cached(("data/dataset_integrado.csv", "outputs/dataset_integrado.csv"), ("timestamp", "acq_date"))
+    filtered = filter_source_rows(integrated, source_value)
+    normalized = normalize_geospatial_frame(filtered, source_name)
+    if normalized is None or normalized.empty:
+        return None
+
+    normalized["_fallback_file"] = filtered.attrs.get("source_path", "data/dataset_integrado.csv")
+    return normalized
+
+
+def load_geospatial_source(
+    primary_candidates: tuple[str, ...],
+    source_value: str,
+    source_name: str,
+    date_columns: tuple[str, ...],
+) -> pd.DataFrame | None:
+    primary = read_csv_cached(primary_candidates, date_columns)
+    normalized = normalize_geospatial_frame(primary, source_name)
+    if normalized is not None and not normalized.empty:
+        normalized["_fallback_file"] = ""
+        return normalized
+
+    fallback = load_integrated_geospatial_source(source_value, source_name)
+    if fallback is None or fallback.empty:
+        return None
+
+    primary_path = primary.attrs.get("source_path", primary_candidates[0]) if primary is not None else primary_candidates[0]
+    fallback["_fallback_reason"] = f"{relative_path(Path(primary_path))} did not provide usable coordinate rows"
+    return fallback
 
 
 @st.cache_data(show_spinner=False)
 def load_nasa_firms() -> pd.DataFrame | None:
-    df = read_csv_cached(("data/nasa_firms.csv", "outputs/nasa_firms.csv"), ("timestamp", "acq_date"))
-    return normalize_geospatial_frame(df, "NASA FIRMS")
+    return load_geospatial_source(("data/nasa_firms.csv", "outputs/nasa_firms.csv"), "nasa_firms", "NASA FIRMS", ("timestamp", "acq_date"))
 
 
 @st.cache_data(show_spinner=False)
 def load_opensky() -> pd.DataFrame | None:
-    df = read_csv_cached(("data/opensky.csv", "outputs/opensky.csv"), ("timestamp", "time_position", "last_contact"))
-    return normalize_geospatial_frame(df, "OpenSky")
+    return load_geospatial_source(("data/opensky.csv", "outputs/opensky.csv"), "opensky", "OpenSky", ("timestamp", "time_position", "last_contact"))
+
+
+@st.cache_data(show_spinner=False)
+def load_acled_geo() -> pd.DataFrame | None:
+    return load_geospatial_source(("data/acled.csv", "outputs/acled.csv"), "acled", "ACLED", ("timestamp", "event_date"))
+
+
+@st.cache_data(show_spinner=False)
+def load_ukmto_geo() -> pd.DataFrame | None:
+    return load_geospatial_source(("data/ukmto.csv", "outputs/ukmto.csv"), "ukmto", "UKMTO", ("timestamp", "report_date", "event_date"))
 
 
 @st.cache_data(show_spinner=False)
 def load_geospatial_data() -> pd.DataFrame | None:
-    frames = [frame for frame in (load_nasa_firms(), load_opensky()) if frame is not None and not frame.empty]
+    frames = [
+        frame
+        for frame in (load_nasa_firms(), load_opensky(), load_acled_geo(), load_ukmto_geo())
+        if frame is not None and not frame.empty
+    ]
     if not frames:
         return None
     return pd.concat(frames, ignore_index=True, sort=False)
@@ -558,7 +643,9 @@ def render_sidebar() -> str:
         "BERTopic": first_existing(("data/dataset_nlp_bertopic.csv", "outputs/models/bertopic_topics.csv")),
         "Embeddings": first_existing(("data/dataset_nlp_embeddings.pkl",)),
         "Models": first_existing(("outputs/model_comparison_advanced.csv", "outputs/model_comparison.csv")),
-        "Geo": first_existing(("data/nasa_firms.csv", "data/opensky.csv")),
+        "Geo": first_existing(("data/nasa_firms.csv", "data/opensky.csv", "data/acled.csv", "data/ukmto.csv")),
+        "Social": first_existing(("data/bluesky_posts.csv",)),
+        "Video": first_existing(("data/youtube_metadata.csv",)),
     }
     for label, path in watched_files.items():
         status = "ready" if path else "missing"
@@ -721,9 +808,31 @@ def render_geospatial() -> None:
     if geo_df is None or geo_df.empty:
         elegant_warning(
             "No geospatial points available.",
-            "Expected data/nasa_firms.csv and/or data/opensky.csv with lat/lon or latitude/longitude columns.",
+            "Expected data/nasa_firms.csv, data/opensky.csv, data/acled.csv and/or data/ukmto.csv with lat/lon or latitude/longitude columns.",
         )
         return
+
+    loaded_counts = geo_df["_source_display"].value_counts()
+    geo_sources = ["NASA FIRMS", "OpenSky", "ACLED", "UKMTO"]
+    loaded_by_source = {source: int(loaded_counts.get(source, 0)) for source in geo_sources}
+    fallback_details = []
+    if "_fallback_file" in geo_df.columns:
+        fallback_rows = geo_df.loc[geo_df["_fallback_file"].fillna("").astype(str).str.len() > 0]
+        for _, row in fallback_rows[["_source_display", "_fallback_file"]].drop_duplicates().iterrows():
+            fallback_details.append(f"{row['_source_display']}: {row['_fallback_file']}")
+    fallback_text = "; ".join(fallback_details) if fallback_details else "No fallback used"
+    source_pills = "\n".join(
+        status_pill(f"{source} loaded", format_int(count), "ready" if count else "warning")
+        for source, count in loaded_by_source.items()
+    )
+
+    st.markdown(
+        f"""
+        {source_pills}
+        {status_pill("Fallback", fallback_text, "warning" if fallback_details else "neutral")}
+        """,
+        unsafe_allow_html=True,
+    )
 
     filter_cols = st.columns([1, 1.25, 1, 1])
     with filter_cols[0]:
@@ -757,24 +866,20 @@ def render_geospatial() -> None:
         elegant_warning("No geospatial observations match the current filters.")
         return
 
-    metric_cols = st.columns(4)
+    metric_cols = st.columns(5)
     with metric_cols[0]:
         st.metric("Visible points", format_int(len(filtered)))
-    with metric_cols[1]:
-        st.metric("NASA FIRMS", format_int((filtered["_source_display"] == "NASA FIRMS").sum()))
-    with metric_cols[2]:
-        st.metric("OpenSky", format_int((filtered["_source_display"] == "OpenSky").sum()))
-    with metric_cols[3]:
-        value_label = "Avg value"
-        st.metric(value_label, f"{filtered['_value'].mean():.2f}" if filtered["_value"].notna().any() else "N/A")
+    for idx, source in enumerate(geo_sources[:4], start=1):
+        with metric_cols[idx]:
+            st.metric(source, format_int((filtered["_source_display"] == source).sum()))
 
     fig = go.Figure()
 
     if show_heatmap and len(filtered) >= 20:
         fig.add_trace(
             go.Densitymapbox(
-                lat=filtered["_lat"],
-                lon=filtered["_lon"],
+                lat=filtered["latitude"],
+                lon=filtered["longitude"],
                 z=filtered["_value"].fillna(1),
                 radius=22,
                 colorscale=[[0, "rgba(37, 99, 235, 0.05)"], [0.5, "rgba(217, 119, 6, 0.45)"], [1, "rgba(220, 38, 38, 0.8)"]],
@@ -799,8 +904,8 @@ def render_geospatial() -> None:
         )
         fig.add_trace(
             go.Scattermapbox(
-                lat=source_df["_lat"],
-                lon=source_df["_lon"],
+                lat=source_df["latitude"],
+                lon=source_df["longitude"],
                 mode="markers",
                 marker=dict(size=marker_size, color=SOURCE_COLORS.get(source, "#64748b"), opacity=0.78),
                 name=source,
@@ -814,7 +919,7 @@ def render_geospatial() -> None:
             )
         )
 
-    center = {"lat": float(filtered["_lat"].median()), "lon": float(filtered["_lon"].median())}
+    center = {"lat": float(filtered["latitude"].median()), "lon": float(filtered["longitude"].median())}
     fig.update_layout(
         mapbox=dict(style=map_style, center=center, zoom=4.1),
         height=650,
@@ -1336,7 +1441,7 @@ def render_about() -> None:
     page_title("About / Methodology", "Sources, pipeline, assumptions and analytical limitations.")
 
     df = load_document_data()
-    source_text = "BBC RSS, Al Jazeera RSS, Google News RSS, GDELT"
+    source_text = "BBC RSS, Al Jazeera RSS, Google News RSS, GDELT, Bluesky, YouTube, ACLED, UKMTO"
     if df is not None and "source" in df.columns:
         source_text = ", ".join(safe_unique(df, "source"))
 
@@ -1345,7 +1450,7 @@ def render_about() -> None:
         <div class="method-grid">
             <section>
                 <h3>Sources</h3>
-                <p>{html_lib.escape(source_text)} feed the text corpus. NASA FIRMS and OpenSky are loaded separately as geospatial context.</p>
+                <p>{html_lib.escape(source_text)} feed the text corpus when their CSVs are available. NASA FIRMS, OpenSky, ACLED and UKMTO are also loaded as geospatial context.</p>
             </section>
             <section>
                 <h3>Pipeline</h3>
