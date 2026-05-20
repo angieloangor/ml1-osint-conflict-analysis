@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSINT Intelligence: Iran-Israel-US Conflict Narrative</title>
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=Outfit:wght@400;700&display=swap" rel="stylesheet">
+    <!-- Globe.gl -->
+    <script src="https://unpkg.com/globe.gl"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="/static/style.css?v=5">
+</head>
+<body>
+    <!-- Title Overlay -->
+    <div id="title-container">
+        <div class="badge">OSINT Intelligence Center</div>
+        <h1>Iran-Israel-US</h1>
+        <h2>Conflict Narrative & Displacement Risk</h2>
+    </div>
+
+    <!-- 3D Globe Container -->
+    <div id="globeViz"></div>
+
+    <!-- Toggle Buttons -->
+    <button id="sidebar-toggle" class="panel-toggle" aria-label="Toggle Right Sidebar">
+        <i data-lucide="chevron-left"></i>
+    </button>
+    <button id="left-panel-toggle" class="panel-toggle" aria-label="Toggle Left Panel">
+        <i data-lucide="info"></i>
+    </button>
+    <button id="bottom-panel-toggle" class="panel-toggle" aria-label="Toggle Bottom Panel">
+        <i data-lucide="cpu"></i>
+        <span>Modelos ML</span>
+    </button>
+    <button id="top-panel-toggle" class="panel-toggle" aria-label="Toggle Top Panel">
+        <i data-lucide="bar-chart-2"></i>
+        <span>EDA</span>
+    </button>
+
+    <!-- Top Panel (EDA) -->
+    <div id="top-panel" class="panel panel-top hidden-top">
+        <div class="panel-header-horizontal">
+            <h3>Análisis Exploratorio de Datos (EDA)</h3>
+            <button id="close-top-panel"><i data-lucide="x"></i></button>
+        </div>
+        <div class="eda-content">
+            <div class="eda-intro">
+                <h4>Contexto y Limpieza de la Base de Datos</h4>
+                <p>El corpus OSINT base consistió en miles de alertas tempranas, noticias y registros de eventos geopolíticos extraídos de fuentes públicas como GDELT y repositorios ACLED. Durante la fase inicial se detectó "ruido" significativo típico de la ingesta web masiva. <strong>El 12% de los registros presentaban valores nulos</strong> en campos críticos como coordenadas geográficas o texto del evento. Asimismo, se identificaron <strong>valores atípicos (outliers)</strong>: reportes con coordenadas ilógicas o longitudes de texto que indicaban errores de web scraping (textos vacíos o artículos de miles de palabras que desviaban la vectorización).</p>
+                <p><strong>Resolución:</strong> Se aplicó una poda estadística. Los nulos espaciales fueron imputados si existía metadato regional (ej. "Teherán"), o eliminados. Los textos se estandarizaron mediante tokenización, conversión a minúsculas y eliminación de stopwords, permitiendo que la base quedara 100% íntegra para el modelado de predicción de riesgo.</p>
+            </div>
+            
+            <div class="eda-detailed-gallery">
+                <!-- 1. Timeline del Conflicto -->
+                <div class="eda-detail-row">
+                    <div class="eda-detail-text">
+                        <h5><i data-lucide="calendar"></i> Evolución Temporal del Conflicto</h5>
+                        <p>Esta gráfica es fundamental para entender la volatilidad geopolítica. Muestra la cantidad de incidentes y menciones a lo largo del tiempo. Los 'picos' en la gráfica correlacionan directamente con eventos críticos en el mundo real (como ataques, discursos o intervenciones militares). Permite a los analistas de inteligencia observar las fases de escalada y desescalada del conflicto.</p>
+                    </div>
+                    <div class="eda-detail-img">
+                        <img src="/outputs/figures/conflict_timeline.png" alt="Línea de Tiempo del Conflicto">
+                    </div>
+                </div>
+
+                <!-- 2. Timeline por Fuente -->
+                <div class="eda-detail-row reverse-row">
+                    <div class="eda-detail-text">
+                        <h5><i data-lucide="activity"></i> Actividad de Reporte por Fuente (Temporal)</h5>
+                        <p>Desglosa el volumen de datos a lo largo del tiempo según la fuente que lo reporta (ej. GDELT vs RSS). Es útil para identificar si ciertos picos de información fueron empujados por un canal mediático específico o si fue un evento detectado simultáneamente por múltiples redes OSINT globales.</p>
+                    </div>
+                    <div class="eda-detail-img">
+                        <img src="/outputs/figures/timeline_per_source.png" alt="Línea de Tiempo por Fuente">
+                    </div>
+                </div>
+
+                <!-- 3. Distribución por Fuente -->
+                <div class="eda-detail-row">
+                    <div class="eda-detail-text">
+                        <h5><i data-lucide="pie-chart"></i> Distribución Global de Señales OSINT</h5>
+                        <p>Representa el peso total histórico de dónde provienen las alertas procesadas. Diferenciar entre bases de datos de eventos crudos (como ACLED o GDELT) y noticias procesadas (RSS) es vital para evitar el sesgo algorítmico y entender la composición final de la base de datos de entrenamiento.</p>
+                    </div>
+                    <div class="eda-detail-img">
+                        <img src="/outputs/figures/distribution_by_source.png" alt="Distribución por Fuente">
+                    </div>
+                </div>
+
+                <!-- 4. Top Words -->
+                <div class="eda-detail-row reverse-row">
+                    <div class="eda-detail-text">
+                        <h5><i data-lucide="message-square"></i> Análisis Semántico Crudo (Palabras Top)</h5>
+                        <p>Tras limpiar el ruido y eliminar palabras comunes (stopwords), esta gráfica expone la pura sustancia narrativa del conflicto. Muestra las entidades, países y acciones más repetidas en toda la base de datos. Es la confirmación visual de que la limpieza de PNL (Procesamiento de Lenguaje Natural) aisló correctamente los términos geopolíticos relevantes.</p>
+                    </div>
+                    <div class="eda-detail-img">
+                        <img src="/outputs/figures/top_words.png" alt="Palabras Clave">
+                    </div>
+                </div>
+
+                <!-- 5. Topic Distribution -->
+                <div class="eda-detail-row">
+                    <div class="eda-detail-text">
+                        <h5><i data-lucide="layers"></i> Agrupación de Narrativas (BERTopic)</h5>
+                        <p>A diferencia del simple conteo de palabras, esta visualización es producto de modelos transformadores avanzados. Agrupa las noticias en macro-temas o "clústeres" latentes (ej. "Ataques Navales", "Crisis Diplomática"). Permite al sistema clasificar de qué habla una noticia nueva de forma automática sin necesidad de lectura humana.</p>
+                    </div>
+                    <div class="eda-detail-img">
+                        <img src="/outputs/figures/topic_distribution.png" alt="Distribución de Tópicos">
+                    </div>
+                </div>
+
+                <!-- 6. Model Comparison -->
+                <div class="eda-detail-row reverse-row">
+                    <div class="eda-detail-text">
+                        <h5><i data-lucide="cpu"></i> Comparativa de Rendimiento de Modelos ML</h5>
+                        <p>El punto culminante del proceso de ciencia de datos. Esta gráfica compara cara a cara el rendimiento de todos los modelos entrenados (Logistic Regression, Naive Bayes, Random Forest, Gradient Boosting, etc.) en términos de Precisión y Accuracy. Justifica científicamente por qué se seleccionó el Gradient Boosting como motor principal de alerta temprana para el dashboard.</p>
+                    </div>
+                    <div class="eda-detail-img">
+                        <img src="/outputs/figures/model_comparison.png" alt="Comparación de Modelos">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Left Panel (Objectives) -->
+    <div id="left-panel" class="panel panel-left hidden-left">
+        <div class="panel-header">
+            <h3>Objetivo del Proyecto</h3>
+            <p>OSINT Intelligence Center</p>
+        </div>
+        <div class="panel-content">
+            <p class="objective-text">El proyecto explora cómo las noticias de código abierto y los conjuntos de datos contextuales pueden apoyar el monitoreo analítico de las narrativas de conflictos geopolíticos (Irán, Israel, EE. UU.).</p>
+            <div class="highlight-box">
+                <i data-lucide="target" class="icon-accent"></i>
+                <p><strong>El objetivo NO es la predicción de escaladas en el mundo real o la atribución causal</strong>, sino la exploración estructurada de señales de información pública a través de Machine Learning.</p>
+            </div>
+            <h4>Fuentes Analizadas</h4>
+            <ul class="source-list">
+                <li><i data-lucide="rss"></i> Google News & GDELT</li>
+                <li><i data-lucide="map"></i> Datos Geoespaciales (NASA FIRMS, ACLED)</li>
+                <li><i data-lucide="users"></i> Datos de Movimiento (UNHCR, WorldPop)</li>
+            </ul>
+        </div>
+    </div>
+
+    <!-- Bottom Panel (Models) -->
+    <div id="bottom-panel" class="panel panel-bottom hidden-bottom">
+        <div class="panel-header-horizontal">
+            <h3>Arquitectura de Modelos ML</h3>
+            <button id="close-bottom-panel"><i data-lucide="x"></i></button>
+        </div>
+        <div class="models-grid">
+            <div class="model-card" data-model="classic">
+                <div class="model-icon"><i data-lucide="book-open"></i></div>
+                <h4>NLP Clásico</h4>
+                <p>Limpieza, tokenización, remoción de stopwords y vectorización TF-IDF como línea base interpretable.</p>
+            </div>
+            <div class="model-card" data-model="modern">
+                <div class="model-icon"><i data-lucide="network"></i></div>
+                <h4>NLP Moderno</h4>
+                <p>Embeddings con sentence-transformers y visualización semántica con proyección UMAP.</p>
+            </div>
+            <div class="model-card" data-model="bertopic">
+                <div class="model-icon"><i data-lucide="layers"></i></div>
+                <h4>BERTopic</h4>
+                <p>Descubrimiento de temas latentes mediante embeddings de transformers y c-TF-IDF.</p>
+            </div>
+            <div class="model-card" data-model="gradientboosting">
+                <div class="model-icon"><i data-lucide="zap"></i></div>
+                <h4>Gradient Boosting</h4>
+                <p>Clasificador ML supervisado con etiquetas débiles heurísticas (Accuracy ~91%).</p>
+            </div>
+            <div class="model-card" data-model="randomforest">
+                <div class="model-icon"><i data-lucide="tree-pine"></i></div>
+                <h4>Random Forest</h4>
+                <p>Algoritmo de ensamble robusto para clasificación (Accuracy ~85%).</p>
+            </div>
+            <div class="model-card" data-model="faiss">
+                <div class="model-icon"><i data-lucide="search"></i></div>
+                <h4>FAISS Indexing</h4>
+                <p>Búsqueda semántica de similitud ultra-rápida de vecindarios semánticos.</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Model Details Modal -->
+    <div id="model-modal" class="modal-overlay hidden-modal">
+        <div class="modal-content">
+            <button id="close-modal"><i data-lucide="x"></i></button>
+            <h3 id="modal-title">Nombre del Modelo</h3>
+            <p id="modal-desc">Descripción del objetivo de este modelo en el proyecto...</p>
+            
+            <div id="modal-metrics" class="modal-metrics hidden">
+                <div class="metric-box">
+                    <span>Accuracy</span>
+                    <strong id="metric-acc">0%</strong>
+                </div>
+                <div class="metric-box">
+                    <span>Precision</span>
+                    <strong id="metric-prec">0%</strong>
+                </div>
+                <div class="metric-box">
+                    <span>F1 Score</span>
+                    <strong id="metric-f1">0%</strong>
+                </div>
+            </div>
+
+            <div class="modal-image-container">
+                <img id="modal-image" src="" alt="Gráfica del Modelo">
+            </div>
+        </div>
+    </div>
+
+    <!-- Right Sidebar (Predictions) -->
+    <div id="sidebar" class="panel panel-right hidden-right">
+        <div class="sidebar-header">
+            <h3>Displacement Risk Analysis</h3>
+            <p>Click on any region on the globe to predict displacement risk based on the OSINT Machine Learning model.</p>
+        </div>
+        
+        <div id="prediction-result" class="hidden">
+            <div class="result-header">
+                <i data-lucide="map-pin" class="icon-accent"></i>
+                <h4 id="country-name">Region Name</h4>
+            </div>
+            
+            <div class="risk-meter-container">
+                <div class="risk-label">
+                    <span>Risk Level</span>
+                    <span id="risk-level-text" class="risk-high">High</span>
+                </div>
+                <div class="progress-bar">
+                    <div id="risk-progress" class="progress-fill" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div class="prediction-text">
+                <p id="prediction-desc">Prediction description goes here...</p>
+            </div>
+
+            <div class="themes-container">
+                <h5>Key Themes Detected</h5>
+                <div id="themes-list" class="badges-container">
+                    <!-- Themes will be injected here -->
+                </div>
+            </div>
+
+            <!-- New Expanded Sections -->
+            <div class="right-tabs">
+                <button class="tab-btn active" data-tab="riesgo">Riesgo & Noticias</button>
+                <button class="tab-btn" data-tab="historia">Historia & Guerra</button>
+            </div>
+
+            <div id="tab-riesgo" class="tab-content active-tab">
+                <div class="news-container">
+                    <h5><i data-lucide="radio" class="icon-small"></i> Últimas Señales OSINT</h5>
+                    <ul id="news-list" class="news-list">
+                        <!-- News items will be injected here -->
+                    </ul>
+                </div>
+            </div>
+
+            <div id="tab-historia" class="tab-content hidden-content">
+                <div class="history-container">
+                    <h5><i data-lucide="history" class="icon-small"></i> Contexto Histórico</h5>
+                    <p id="history-text">Historial narrativo...</p>
+                </div>
+                <div class="war-container">
+                    <h5><i data-lucide="swords" class="icon-small"></i> Guerra Activa y Actores</h5>
+                    <p id="war-context-text">Contexto de la guerra activa...</p>
+                </div>
+            </div>
+        </div>
+
+        <div id="placeholder-text">
+            <div class="pulse-icon">
+                <i data-lucide="mouse-pointer-click"></i>
+            </div>
+            <p>Select a location on the 3D map to run the predictive model.</p>
+        </div>
+    </div>
+
+    <!-- Custom JS -->
+    <script src="/static/app.js?v=3"></script>
+</body>
+</html>
